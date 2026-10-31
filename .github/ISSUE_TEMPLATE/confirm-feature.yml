@@ -1,0 +1,19 @@
+name: Works on my car
+description: Confirm a library feature works on your car
+title: "Works on my car: "
+labels: ["confirmation"]
+body:
+  - type: markdown
+    attributes:
+      value: Hatchling fills this in when you mark a library feature as working. It's counted automatically.
+  - type: input
+    id: feature
+    attributes:
+      label: Feature id
+    validations:
+      required: true
+  - type: input
+    id: part
+    attributes:
+      label: Module part number
+      description: The part number of your main module for this feature (helps others with the same module).

@@ -1,0 +1,41 @@
+name: Share a feature
+description: Add a feature you've learned on your car to the Hatchling library
+title: "Feature: "
+labels: ["feature-submission"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Hatchling fills this in for you when you press **Share to library**. A maintainer reviews it;
+        once it's labelled **approved** it's added to the library automatically.
+        Only share features read from your own car. Never include your VIN.
+  - type: dropdown
+    id: make
+    attributes:
+      label: Make
+      options: [Ford, Lincoln, Mercury, Mazda, Other]
+      default: 0
+    validations:
+      required: true
+  - type: textarea
+    id: feature
+    attributes:
+      label: Feature file
+      description: The feature JSON exported from Hatchling.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Anything others should know (engine, trim, what you fitted).
+  - type: checkboxes
+    id: rules
+    attributes:
+      label: Checks
+      options:
+        - label: I read this from my own car and it works on my car
+          required: true
+        - label: It contains no VIN or personal details
+          required: true
