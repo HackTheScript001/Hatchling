@@ -215,6 +215,22 @@ Issue text is treated as untrusted data: the Action passes it to `tools/library_
 file and never into a shell command. Run `python tools/library_tool.py check` any time to
 re-validate every library file.
 
+## Learn a feature from your car
+
+Features page > **Learn a feature from my car**:
+1. Name it and take a **before** snapshot (every module, backed up).
+2. Change just that one setting with the tool you normally use or at a garage. Using the same adapter?
+   Press **Free the adapter** first, and close the other program afterwards.
+3. Cycle the ignition and take the **after** snapshot. Hatchling lists exactly what changed - save it as a
+   feature and it can switch it on and off from then on.
+
+## Sharing your factory file
+
+Modules > **Share my factory file** sends your car's factory As-Built (VIN removed) plus the options it
+came with. Once there are at least two cars with and two without an option, the repo's comparison tool
+finds the bits that option uses and proposes a feature in `factory-data/<make>/<model>/proposed/` -
+without anyone writing to their car. Maintainers review proposals before they go into the library.
+
 ## Feature finder
 
 In Configuration, read a module, then **Load backup** from a car that has the feature (or

@@ -1,0 +1,26 @@
+name: Share a factory file
+description: Share your car's factory As-Built file (VIN removed) so Hatchling can work out which bits each option uses
+title: "Factory file: "
+labels: ["factory-file"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Hatchling fills this in when you press **Share my factory file**. Your VIN has already been removed.
+        Comparing factory files from cars with and without an option shows exactly which bits that option
+        uses - nothing is written to anyone's car to find out. A maintainer reviews it and adds the label **approved**.
+  - type: textarea
+    id: factory
+    attributes:
+      label: Factory file
+      description: The file Hatchling copied to your clipboard (paste it here if it isn't already filled in).
+      render: json
+    validations:
+      required: true
+  - type: checkboxes
+    id: rules
+    attributes:
+      label: Checks
+      options:
+        - label: This is my own car's factory file and the options I ticked are right
+          required: true

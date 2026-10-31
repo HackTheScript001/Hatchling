@@ -93,6 +93,7 @@ class Session(QObject):
     features_detected = Signal(object)
     factory_changed = Signal()
     codes_read = Signal(int)
+    library_changed = Signal()
     tech_changed = Signal(bool)   # {"states": {...}, "blocks": {...}} after a module scan
 
     def __init__(self):
@@ -110,11 +111,16 @@ class Session(QObject):
         self.profile: Optional[vehicles.Profile] = None
         self.obd: Optional[GenericObd] = None
         self.factory: Optional[factory.FactoryData] = None
+        self.port, self.baud = "", 38400
+        self.paused = False
         self.voltage: Optional[float] = None
         self.tech = False          # show block/byte/bit details
         self.window: Optional[QWidget] = None
         self.open_config: Callable = lambda *a: None  # set by MainWindow
         self.focus_mode: Callable[[bool], None] = lambda on: None  # set by MainWindow
+        self.go: Callable[[str], None] = lambda key: None              # set by MainWindow
+        self.open_learn: Callable[..., None] = lambda name="": None    # set by MainWindow
+        self.open_factory_diff: Callable[[], None] = lambda: None      # set by MainWindow
         try:
             self.history: Optional[history.History] = history.History()
         except Exception as e:  # history is a nice-to-have, never block the app
@@ -182,6 +188,24 @@ class Session(QObject):
 
     def scan_buses(self) -> List[str]:
         return self.profile.can_buses if self.profile else [HS, MS]
+
+    def pause_adapter(self):
+        """Closes the COM port so another program can use the adapter (keeps everything else)."""
+        if self.elm and not self.simulated and not self.paused:
+            self.elm.close()
+            self.paused = True
+            self.log("Adapter freed for another program")
+
+    def resume_adapter(self):
+        """Reopens the COM port after pause_adapter (runs on the worker thread)."""
+        if not self.paused or not self.elm:
+            return
+        self.elm.t = SerialTransport(self.port, self.baud)
+        self.elm.bus = None
+        self.elm._target = None
+        self.elm.initialise()
+        self.paused = False
+        self.log("Adapter reconnected")
 
     def module_for(self, bus: str, addr: int) -> Module:
         key = f"{bus}:{addr:03X}"
@@ -539,6 +563,7 @@ class ConnectPage(Page):
             s = self.s
             s.elm, s.uds, s.obd = elm, uds, obd
             s.simulated = sim
+            s.port, s.baud, s.paused = port, baud, False
             s.auto_switch = self.auto.isChecked()
             s.vin = vin_txt
             s.vin_info = vin.decode(vin_txt)
@@ -608,10 +633,13 @@ class ModulesPage(Page):
         self.diff_btn.clicked.connect(self.changes_since_factory)
         self.donor_btn = button("Compare with donor car")
         self.donor_btn.clicked.connect(self.compare_donor)
+        self.share_fac_btn = button("Share my factory file")
+        self.share_fac_btn.clicked.connect(lambda: ShareFactoryDialog(self, self.s).exec())
         frow.addWidget(self.factory_label, 1)
         frow.addWidget(self.import_btn)
         frow.addWidget(self.diff_btn)
         frow.addWidget(self.donor_btn)
+        frow.addWidget(self.share_fac_btn)
         self.root.addLayout(frow)
         s.factory_changed.connect(self.show_factory)
         s.connected_changed.connect(lambda _: self.show_factory())
@@ -692,12 +720,14 @@ class ModulesPage(Page):
                                        f"{f.vin} ({len(f.modules)} modules, imported {f.imported})")
             self.diff_btn.setEnabled(True)
             self.donor_btn.setEnabled(True)
+            self.share_fac_btn.setEnabled(True)
         else:
             self.factory_label.setText(f"<span style='color:{WARN}'>●</span> No factory As-Built yet. Before "
                                        "changing anything, download it for your VIN (motorcraftservice.com, "
                                        "As-Built data) and import it here.")
             self.diff_btn.setEnabled(False)
             self.donor_btn.setEnabled(False)
+            self.share_fac_btn.setEnabled(False)
 
     def compare_donor(self):
         """Your car's factory file vs a donor car's (same model, has the feature) - the differences
@@ -1254,7 +1284,7 @@ class FeatureFinderDialog(QDialog):
     unless the user ticks that their car already has the feature (then it's flipped)."""
 
     def __init__(self, parent, s: Session, groups, title: str = "", before_label: str = "Before",
-                 after_label: str = "After", offer_flip: bool = True, hint: str = ""):
+                 after_label: str = "After", offer_flip: bool = True, hint: str = "", name: str = ""):
         super().__init__(parent)
         self.s = s
         self.rows = [(m, c) for m, changes in groups for c in changes]
@@ -1303,7 +1333,7 @@ class FeatureFinderDialog(QDialog):
         for f in features.load_all():
             if f.path.startswith(paths.user_dir("features")):
                 self.target.addItem(f"Add to: {f.name}", f.path)
-        self.name = QLineEdit()
+        self.name = QLineEdit(name)
         self.name.setPlaceholderText("Cruise control")
         self.desc = QLineEdit()
         self.desc.setPlaceholderText("What turning it on does")
@@ -1407,6 +1437,291 @@ def import_factory_file(parent, s: "Session") -> bool:
                             "Next: run a module scan, then <b>Changes since factory</b> on the Modules page shows "
                             "everything that's different from how the car left the factory.")
     return True
+
+
+# ---------------------------------------------------------------- Share a factory file
+class ShareFactoryDialog(QDialog):
+    """Sends the car's factory file (VIN removed) plus the options it has, so cars with and without
+    each option can be compared to find its bits."""
+
+    def __init__(self, parent, s: Session):
+        super().__init__(parent)
+        self.s = s
+        self.setWindowTitle("Share my factory file")
+        self.setMinimumWidth(560)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 18, 22, 16)
+        lay.setSpacing(8)
+        t = QLabel("Help work out where features live")
+        t.setObjectName("title")
+        lay.addWidget(t)
+        intro = QLabel("Your factory file shows how your car was built. Compared with other owners' files - cars "
+                       "with and without each option - it shows exactly which settings each option uses, without "
+                       "anyone changing anything on their car.<br><br><b>Your VIN is removed</b> before anything is "
+                       "shared. Only the details below and the module settings are sent.")
+        intro.setWordWrap(True)
+        intro.setTextFormat(Qt.RichText)
+        lay.addWidget(intro)
+        grid = QGridLayout()
+        info = s.vin_info
+        self.f = {}
+        for r, (key, label, val, ph) in enumerate((
+                ("make", "Make", info.make if info and info.make in ("Ford", "Lincoln", "Mercury", "Mazda") else "Ford", ""),
+                ("model", "Model", "", "Fiesta Mk7"),
+                ("year", "Year", str(info.year) if info and info.year else "", "2015"),
+                ("engine", "Engine", "", "1.0 EcoBoost 100"),
+                ("trim", "Trim", "", "Zetec"),
+                ("market", "Country sold in", "UK", "UK"))):
+            w = QLineEdit(val)
+            w.setPlaceholderText(ph)
+            grid.addWidget(QLabel(label), r, 0)
+            grid.addWidget(w, r, 1)
+            self.f[key] = w
+        lay.addLayout(grid)
+        lab = QLabel("Which of these did your car come with from the factory?")
+        lab.setObjectName("subtle")
+        lay.addWidget(lab)
+        og = QGridLayout()
+        self.opts = []
+        for i, o in enumerate(factory.OPTIONS):
+            cb = QCheckBox(o)
+            og.addWidget(cb, i // 3, i % 3)
+            self.opts.append(cb)
+        lay.addLayout(og)
+        note = QLabel("Only tick what was fitted at the factory - not parts added later.")
+        note.setObjectName("subtle")
+        lay.addWidget(note)
+        row = QHBoxLayout()
+        row.addStretch()
+        cancel, ok = button("Cancel"), button("Share on GitHub", "primary")
+        cancel.clicked.connect(self.reject)
+        ok.clicked.connect(self.share)
+        row.addWidget(cancel)
+        row.addWidget(ok)
+        lay.addLayout(row)
+
+    def share(self):
+        if not self.s.factory:
+            QMessageBox.information(self, "Hatchling", "Import your factory file first.")
+            return
+        if not self.f["model"].text().strip():
+            QMessageBox.information(self, "Hatchling", "Enter the model, e.g. Fiesta Mk7.")
+            return
+        if not library.repo():
+            QMessageBox.information(self, "Hatchling", "Set the library's GitHub repository first (Feature library > "
+                                                       "Library settings).")
+            return
+        anon = factory.anonymise(self.s.factory, {k: w.text() for k, w in self.f.items()},
+                                 [cb.text() for cb in self.opts if cb.isChecked()])
+        url, text, prefilled = library.factory_share_link(anon)
+        QApplication.clipboard().setText(text)
+        extra = (f"<br>{anon['dropped_lines']} line(s) that looked like they held a VIN were left out."
+                 if anon["dropped_lines"] else "")
+        QMessageBox.information(
+            self, "Share my factory file",
+            f"Ready: {len(anon['lines'])} lines, {len(anon['options'])} option(s) ticked, VIN removed.{extra}<br><br>"
+            "GitHub opens in your browser. " + ("Everything is filled in" if prefilled else
+                                                 "Click in <b>Factory file</b> and paste (Ctrl+V) - it's on your clipboard")
+            + ", tick the box and press <b>Submit new issue</b>.")
+        open_url(url)
+        self.s.log("Opened GitHub to share the factory file")
+        self.accept()
+
+
+# ---------------------------------------------------------------- Learn a feature
+class LearnDialog(QDialog):
+    """Before snapshot -> the user changes one setting with another tool -> after snapshot -> feature.
+    Works for anything you can change with another tool or at a dealer, on your own car."""
+
+    def __init__(self, parent, s: Session, name: str = ""):
+        super().__init__(parent)
+        self.s = s
+        self.setWindowTitle("Learn a feature from my car")
+        self.setMinimumSize(560, 520)
+        self.before: Dict[features.ModKey, asbuilt.Blocks] = {}
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 18, 22, 16)
+        lay.setSpacing(10)
+        self.step = QLabel("")
+        self.step.setObjectName("subtle")
+        lay.addWidget(self.step)
+        self.head = QLabel("")
+        self.head.setObjectName("title")
+        self.head.setWordWrap(True)
+        lay.addWidget(self.head)
+        self.text = QLabel("")
+        self.text.setWordWrap(True)
+        self.text.setTextFormat(Qt.RichText)
+        lay.addWidget(self.text)
+
+        # step 1 widgets
+        self.name = QLineEdit(name)
+        self.name.setPlaceholderText("What are you changing? e.g. Cruise control")
+        lay.addWidget(self.name)
+        self.mods = QListWidget()
+        seen = set()
+        for m in sorted(s.modules.values(), key=lambda m: (m.bus, m.addr)):
+            if m.addr in seen or m.bus not in BUSES or BUSES[m.bus].protocol != "can":
+                continue
+            seen.add(m.addr)
+            it = QListWidgetItem(f"{m.name}  ({m.bus}-CAN)")
+            it.setData(Qt.UserRole, m.key)
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Checked)
+            self.mods.addItem(it)
+        lay.addWidget(self.mods, 1)
+
+        # step 2 widgets
+        self.dir_on = QCheckBox("I'm turning the feature ON (untick if you're turning it off)")
+        self.dir_on.setChecked(True)
+        lay.addWidget(self.dir_on)
+        self.free_btn = button("Free the adapter for my other tool")
+        self.free_btn.clicked.connect(self.free)
+        lay.addWidget(self.free_btn, 0, Qt.AlignLeft)
+
+        row = QHBoxLayout()
+        row.addStretch()
+        self.cancel = button("Cancel")
+        self.cancel.clicked.connect(self.close_dialog)
+        self.go_btn = button("", "primary")
+        self.go_btn.clicked.connect(self.next)
+        row.addWidget(self.cancel)
+        row.addWidget(self.go_btn)
+        lay.addLayout(row)
+        self.stage = 1
+        self.render()
+
+    def render(self):
+        s1 = self.stage == 1
+        self.name.setVisible(s1)
+        self.mods.setVisible(s1)
+        self.dir_on.setVisible(not s1)
+        self.free_btn.setVisible(not s1 and not self.s.simulated)
+        if s1:
+            self.step.setText("Step 1 of 3")
+            self.head.setText("Take a 'before' snapshot")
+            self.text.setText("Hatchling reads the settings of every ticked module and keeps a backup. Leave them all "
+                              "ticked if you're not sure where the feature lives - it only takes a little longer.")
+            self.go_btn.setText("Take the before snapshot")
+        else:
+            self.step.setText("Step 2 of 3")
+            self.head.setText(f"Now change {html.escape(self.name.text() or 'the setting')}")
+            self.text.setText(
+                "Change just this one setting using the tool you normally use, or have it done at a garage. "
+                "Changing more than one thing at once makes it hard to tell which bits belong to which.<br><br>"
+                "<b>Using the same adapter?</b> Press <i>Free the adapter</i> first so the other program can use it. "
+                "Close that program when you're done.<br><br>"
+                "When the change is made, switch the ignition off for 30 seconds and back on, then press "
+                "<b>Take the after snapshot</b>.")
+            self.go_btn.setText("Take the after snapshot")
+
+    def free(self):
+        self.s.pause_adapter()
+        self.free_btn.setText("Adapter freed - close your other program before continuing")
+        self.free_btn.setEnabled(False)
+
+    def selected(self) -> List[Module]:
+        out = []
+        for i in range(self.mods.count()):
+            it = self.mods.item(i)
+            if it.checkState() == Qt.Checked:
+                m = self.s.modules.get(it.data(Qt.UserRole))
+                if m:
+                    out.append(m)
+        return out
+
+    def snapshot(self, then: Callable[[Dict[features.ModKey, asbuilt.Blocks]], None]):
+        mods = self.selected()
+        result: Dict[features.ModKey, asbuilt.Blocks] = {}
+        jobs = {}
+        for bus in {m.bus for m in mods}:
+            ms = [m for m in mods if m.bus == bus]
+
+            def job(ms=ms):
+                out = {}
+                for m in ms:
+                    try:
+                        out[(m.bus, m.addr)] = asbuilt.read_blocks(self.s.uds, m)
+                    except (UdsError, ElmError) as e:
+                        self.s.log(f"{m.name}: couldn't read - {e}")
+                return out
+            jobs[bus] = job
+        self.go_btn.setEnabled(False)
+        self.go_btn.setText("Reading the car...")
+
+        def done():
+            self.go_btn.setEnabled(True)
+            then(result)
+
+        def start(_=None):
+            self.s.per_bus(jobs, lambda b, r: result.update(r), done)
+
+        def failed(e):
+            self.go_btn.setEnabled(True)
+            QMessageBox.warning(self, "Hatchling", f"Couldn't reconnect to the adapter: {e}<br><br>Make sure the other "
+                                                   "program is closed, then try again.")
+            self.render()
+        if self.s.paused:
+            self.s.runner.run(self.s.resume_adapter, start, failed)
+        else:
+            start()
+
+    def next(self):
+        if self.stage == 1:
+            if not self.name.text().strip():
+                QMessageBox.information(self, "Hatchling", "Give the feature a name first.")
+                return
+            if not self.selected():
+                QMessageBox.information(self, "Hatchling", "Tick at least one module.")
+                return
+
+            def got(blocks):
+                if not blocks:
+                    QMessageBox.warning(self, "Hatchling", "Couldn't read any modules. Check the adapter and try again.")
+                    self.render()
+                    return
+                self.before = blocks
+                for key, b in blocks.items():
+                    asbuilt.save_backup(self.s.module_for(*key), b, self.s.vin, f"before learning {self.name.text()}")
+                self.s.log(f"Learn: before snapshot of {len(blocks)} module(s)")
+                self.stage = 2
+                self.render()
+            self.snapshot(got)
+            return
+
+        def got_after(after):
+            groups = []
+            for key, b in self.before.items():
+                if key in after:
+                    ch = finder.compare(b, after[key])
+                    if ch:
+                        groups.append((self.s.module_for(*key), ch))
+            if not groups:
+                QMessageBox.information(
+                    self, "No changes found", "Nothing changed between the two snapshots. Check the change was saved "
+                    "(and the ignition was cycled), then press Take the after snapshot again.")
+                self.render()
+                return
+            if not self.dir_on.isChecked():   # turned OFF: before = on, after = off
+                groups = [(m, [finder.ByteChange(c.did, c.byte, c.after, c.before) for c in ch]) for m, ch in groups]
+            self.s.log(f"Learn: {sum(len(c) for _, c in groups)} byte(s) changed in {len(groups)} module(s)")
+            self.step.setText("Step 3 of 3")
+            self.hide()
+            FeatureFinderDialog(
+                self.parent(), self.s, groups, name=self.name.text().strip(),
+                title=f"What changed when you {'turned on' if self.dir_on.isChecked() else 'turned off'} "
+                      f"{self.name.text().strip()}",
+                before_label="Off", after_label="On", offer_flip=False,
+                hint="These are the bits that changed. If you only changed this one setting, keep them all. Save it "
+                     "and Hatchling can switch it on and off from now on.").exec()
+            self.close_dialog()
+        self.snapshot(got_after)
+
+    def close_dialog(self):
+        if self.s.paused:
+            self.s.runner.run(self.s.resume_adapter, lambda _: None,
+                              lambda e: self.s.log(f"Couldn't reconnect the adapter: {e}"))
+        self.close()
 
 
 # ---------------------------------------------------------------- As-Built
@@ -2286,6 +2601,7 @@ class LibraryPage(Page):
             new = len(idx["features"]) - len((self.index or {}).get("features", []))
             self.index, self.source = idx, "downloaded"
             self.render()
+            self.s.library_changed.emit()
             self.s.log(f"Library updated: {len(idx['features'])} feature(s)")
             if not quiet:
                 self.show_status("up to date" + (f", {new} new" if new > 0 else ""))
@@ -2373,6 +2689,7 @@ class LibraryPage(Page):
                 return
             self.s.log(f"Installed from library: {e['name']} -> {path}")
             self.s.features_changed.emit()
+            self.s.library_changed.emit()
             self.render()
             QMessageBox.information(
                 self, "Installed", f"<b>{e['name']}</b> is in your Features list.<br><br>Run a <b>module scan</b> to "
@@ -2637,7 +2954,8 @@ class PartRow(QFrame):
         lay.addSpacing(10)
         self.toggle = Toggle()
         self.toggle.setEnabled(False)
-        self.toggle.toggled.connect(lambda _: changed())
+        self.touched = False
+        self.toggle.toggled.connect(lambda _: (setattr(self, "touched", True), changed()))
         lay.addWidget(self.toggle)
         self.actual: Optional[str] = None
 
@@ -2647,6 +2965,7 @@ class PartRow(QFrame):
         self.toggle.setChecked(state == features.ENABLED)
         self.toggle.blockSignals(False)
         self.toggle.setEnabled(state in (features.ENABLED, features.DISABLED, features.MIXED))
+        self.touched = False
         self.refresh()
 
     @property
@@ -2654,7 +2973,7 @@ class PartRow(QFrame):
         if not self.toggle.isEnabled() or self.actual is None:
             return False
         if self.actual == features.MIXED:
-            return True if self.toggle.isChecked() else False
+            return self.touched          # partly set: any choice the user makes is a change (fully on or off)
         return self.toggle.isChecked() != (self.actual == features.ENABLED)
 
     def refresh(self):
@@ -2791,11 +3110,14 @@ class FeaturesPage(Page):
                                         "backs everything up, so you can always switch back.")
         split = QSplitter()
         self.list = QListWidget()
-        self.list.setMinimumWidth(250)
+        self.list.setMinimumWidth(260)
         self.list.currentRowChanged.connect(self.show_feature)
         split.addWidget(self.list)
+        self.entries: List[Tuple[str, object]] = []   # per list row: ("head", text) / ("feat", Feature) / ("lib", entry)
 
+        self.right_stack = QStackedWidget()
         right = QWidget()
+        self.right_stack.addWidget(right)
         rl = QVBoxLayout(right)
         rl.setContentsMargins(14, 0, 0, 0)
         rl.setSpacing(10)
@@ -2867,6 +3189,10 @@ class FeaturesPage(Page):
 
         self.confirm = QCheckBox("I've checked these values are right for my car")
         rl.addWidget(self.confirm)
+        self.hint = QLabel("")
+        self.hint.setWordWrap(True)
+        self.hint.setObjectName("subtle")
+        rl.addWidget(self.hint)
         row = QHBoxLayout()
         self.read_btn = button("Check what's on")
         self.apply_btn = button("Apply changes", "primary")
@@ -2891,7 +3217,42 @@ class FeaturesPage(Page):
         row.addWidget(self.export_btn)
         row.addWidget(reload_btn)
         rl.addLayout(row)
-        split.addWidget(right)
+        lrow = QHBoxLayout()
+        learn_btn = button("Learn a feature from my car")
+        learn_btn.setObjectName("link")
+        learn_btn.clicked.connect(lambda: self.s.open_learn())
+        fac_btn = button("Find what's changed since the factory")
+        fac_btn.setObjectName("link")
+        fac_btn.clicked.connect(lambda: self.s.open_factory_diff())
+        lrow.addWidget(learn_btn)
+        lrow.addSpacing(16)
+        lrow.addWidget(fac_btn)
+        lrow.addStretch()
+        rl.addLayout(lrow)
+
+        # library entry view (feature available for this car but not installed)
+        libw = QWidget()
+        ll = QVBoxLayout(libw)
+        ll.setContentsMargins(14, 0, 0, 0)
+        lc, lcl = card()
+        self.lib_title = QLabel("")
+        self.lib_title.setObjectName("title")
+        self.lib_text = QLabel("")
+        self.lib_text.setWordWrap(True)
+        self.lib_text.setTextFormat(Qt.RichText)
+        lcl.addWidget(self.lib_title)
+        lcl.addWidget(self.lib_text)
+        ll.addWidget(lc)
+        lb = QHBoxLayout()
+        self.lib_add = button("Add to my features", "primary")
+        self.lib_add.clicked.connect(self.add_from_library)
+        lb.addWidget(self.lib_add)
+        lb.addStretch()
+        ll.addLayout(lb)
+        ll.addStretch()
+        self.right_stack.addWidget(libw)
+
+        split.addWidget(self.right_stack)
         split.setStretchFactor(1, 1)
         self.root.addWidget(split, 1)
 
@@ -2900,41 +3261,184 @@ class FeaturesPage(Page):
         self.states: Dict[str, Dict[features.ModKey, str]] = {}   # feature id -> part states
         self.hw: Dict[str, List[Optional[Tuple[bool, str]]]] = {}  # feature id -> result per check
         self.blocks: Dict[features.ModKey, asbuilt.Blocks] = {}
-        s.connected_changed.connect(lambda _: (self.states.clear(), self.hw.clear(), self.refresh_list(),
-                                               self.show_feature()))
+        s.connected_changed.connect(lambda _: (self.states.clear(), self.hw.clear(), self.reload()))
         s.features_changed.connect(self.reload)
         s.features_detected.connect(self.on_detected)
+        s.modules_changed.connect(lambda: self.refresh_list())
+        s.library_changed.connect(lambda: self.refresh_list())
         self.reload()
 
     # ---- list -------------------------------------------------------
     def reload(self):
-        self.feats = features.load_all()
-        self.states.clear()
+        keep = self.current_key()
+        self.feats = [f for f in features.load_all()
+                      if f.category != "Simulator" or self.s.simulated or not self.s.connected]
+        self.states = {k: v for k, v in self.states.items() if any(f.id == k for f in self.feats)}
         self.hw.clear()
-        self.list.clear()
-        for _ in self.feats:
-            QListWidgetItem("", self.list)
-        self.refresh_list()
-        if self.feats:
-            self.list.setCurrentRow(0)
-        else:
-            self.title.setText("No features yet")
-            self.desc.setText(f"Copy _TEMPLATE.json in {features.FEATURES_DIR} to create one.")
+        self.refresh_list(keep)
 
-    def refresh_list(self):
-        for i, f in enumerate(self.feats):
-            st = self.feature_state(f)
-            mark = {features.ENABLED: "●", features.DISABLED: "○", features.MIXED: "◐",
-                    features.NOT_FOUND: "–"}.get(st, "·")
-            it = self.list.item(i)
-            if it is None:
+    def current_key(self) -> Optional[str]:
+        r = self.list.currentRow()
+        if 0 <= r < len(self.entries):
+            kind, obj = self.entries[r]
+            if kind == "feat":
+                return "feat:" + obj.id
+            if kind == "lib":
+                return "lib:" + obj["id"]
+        return None
+
+    def library_entries(self) -> List[dict]:
+        """Library features for this car that aren't installed yet (only once the car is known)."""
+        idx, _ = library.best_index()
+        if not idx or not self.s.connected:
+            return []
+        have = set(library.installed()) | {f.library_id for f in self.feats if f.library_id}
+        make = self.s.vin_info.make if self.s.vin_info else None
+        out = []
+        for e in idx.get("features", []):
+            if e["id"] in have or not library.entry_matches_make(e, make):
                 continue
-            it.setText(f"{mark}  {f.name}\n     {f.category}")
-            it.setForeground(QColor(STATE_COLORS.get(st, INK)))
+            if self.s.modules:
+                lvl = self.lib_level(e)
+                if lvl in (features.DIFFERENT, features.MISSING):
+                    continue
+            out.append(e)
+        return out
+
+    def lib_level(self, e: dict) -> str:
+        f = features._parse({"name": e["name"], "modules": [dict(m, changes=[]) for m in e["modules"]]}, e["id"])
+        return features.compatibility_level(features.compatibility(f, self.scanned_identities()))
+
+    def refresh_list(self, keep: Optional[str] = None):
+        keep = keep if keep is not None else self.current_key()
+        groups = [("On", [features.ENABLED]), ("Partly on", [features.MIXED]), ("Off", [features.DISABLED]),
+                  ("Not checked yet", ["not read"]), ("Not on this car", [features.NOT_FOUND, features.UNKNOWN]),
+                  ("Waiting for values", [features.NEEDS_VALUES])]
+        by: Dict[str, List[features.Feature]] = {}
+        for f in self.feats:
+            by.setdefault(self.feature_state(f), []).append(f)
+        self.list.blockSignals(True)
+        self.list.clear()
+        self.entries = []
+
+        def head(text):
+            it = QListWidgetItem(text)
+            it.setFlags(Qt.NoItemFlags)
+            fnt = it.font()
+            fnt.setBold(True)
+            it.setFont(fnt)
+            it.setForeground(QColor(MUTED))
+            self.list.addItem(it)
+            self.entries.append(("head", text))
+
+        for title, states in groups:
+            items = [f for st in states for f in by.get(st, [])]
+            if not items:
+                continue
+            head(title)
+            for f in sorted(items, key=lambda f: f.name):
+                st = self.feature_state(f)
+                it = QListWidgetItem(f"  {f.name}")
+                it.setForeground(QColor(STATE_COLORS.get(st, INK)) if st in (features.ENABLED, features.MIXED)
+                                 else QColor(INK))
+                self.list.addItem(it)
+                self.entries.append(("feat", f))
+        libs = self.library_entries()
+        if libs:
+            head("In the library for your car")
+            for e in libs:
+                it = QListWidgetItem(f"  {e['name']}")
+                it.setForeground(QColor(ACCENT))
+                self.list.addItem(it)
+                self.entries.append(("lib", e))
+        self.list.blockSignals(False)
+        target = 0
+        for i, (kind, obj) in enumerate(self.entries):
+            key = "feat:" + obj.id if kind == "feat" else "lib:" + obj["id"] if kind == "lib" else None
+            if keep and key == keep:
+                target = i
+                break
+        else:
+            target = next((i for i, (k, _) in enumerate(self.entries) if k != "head"), -1)
+        if target >= 0:
+            self.list.setCurrentRow(target)
+        self.show_feature()
+        if not self.entries:
+            self.title.setText("No features yet")
+            self.desc.setText("Scan the car, then use Learn a feature from my car, or add one from the Feature "
+                              "library.")
 
     def feature(self) -> Optional[features.Feature]:
         r = self.list.currentRow()
-        return self.feats[r] if 0 <= r < len(self.feats) else None
+        if 0 <= r < len(self.entries) and self.entries[r][0] == "feat":
+            return self.entries[r][1]
+        return None
+
+    def lib_entry(self) -> Optional[dict]:
+        r = self.list.currentRow()
+        if 0 <= r < len(self.entries) and self.entries[r][0] == "lib":
+            return self.entries[r][1]
+        return None
+
+    def confidence(self, f: features.Feature) -> str:
+        """How sure we are this feature is right for this car's modules (library features)."""
+        if not f.library_id:
+            return ""
+        idx, _ = library.best_index()
+        e = next((x for x in (idx or {}).get("features", []) if x["id"] == f.library_id), None)
+        if not e:
+            return ""
+        return self.confidence_text(e)
+
+    def confidence_text(self, e: dict) -> str:
+        fam = e.get("confirmations_by_family") or {}
+        mine = {features.part_family(m.identity.get("Part number", "")) for m in self.s.modules.values()
+                if m.identity.get("Part number")}
+        n_mine = sum(v for k, v in fam.items() if k in mine)
+        total = e.get("confirmations", 0)
+        if n_mine >= 3:
+            return f"<span style='color:{OK}'>Confirmed working on {n_mine} cars with your module</span>"
+        if n_mine:
+            return f"<span style='color:{WARN}'>Early - confirmed on {n_mine} car(s) with your module, test carefully</span>"
+        if total:
+            return f"<span style='color:{WARN}'>Confirmed on {total} car(s), none with your exact module yet</span>"
+        return f"<span style='color:{WARN}'>New - not confirmed by anyone yet, test carefully</span>"
+
+    def show_library_entry(self, e: dict):
+        self.right_stack.setCurrentIndex(1)
+        self.lib_title.setText(e["name"])
+        lvl = self.lib_level(e) if self.s.modules else ""
+        match = {features.SAME: f"<span style='color:{OK}'>Your modules match the ones it was learned on</span>",
+                 features.FAMILY: f"<span style='color:{OK}'>Same modules, different revision - very likely fine</span>",
+                 features.UNKNOWN_PART: "Couldn't compare part numbers"}.get(lvl, "Scan the car to check it "
+                                                                              "matches your modules")
+        self.lib_text.setText(
+            f"<p>{html.escape(e.get('description') or '')}</p>"
+            f"<p>{match}<br>{self.confidence_text(e)}</p>"
+            f"<p><b>Parts needed:</b> {html.escape(e.get('hardware_required') or 'none listed')}<br>"
+            f"<b>Learned on:</b> {html.escape(e.get('learned_on') or '-')}</p>"
+            "<p>Add it to your features, then Hatchling reads your car to show whether it's on.</p>")
+
+    def add_from_library(self):
+        e = self.lib_entry()
+        if not e:
+            return
+
+        def ok(data):
+            try:
+                library.install(data)
+            except (library.LibraryError, OSError, ValueError, KeyError) as ex:
+                QMessageBox.warning(self, "Hatchling", f"Couldn't add it: {ex}")
+                return
+            self.s.log(f"Added from library: {e['name']}")
+            self.reload()
+            for i, (kind, obj) in enumerate(self.entries):
+                if kind == "feat" and obj.library_id == e["id"]:
+                    self.list.setCurrentRow(i)
+                    break
+            if self.s.connected:
+                self.read_status()
+        self.s.runner.run(lambda: library.get(e), ok)
 
     def on_detected(self, payload):
         """Called after a module scan: states for every feature, read from the car."""
@@ -2962,6 +3466,11 @@ class FeaturesPage(Page):
 
     # ---- detail -----------------------------------------------------
     def show_feature(self, *_):
+        e = self.lib_entry()
+        if e:
+            self.show_library_entry(e)
+            return
+        self.right_stack.setCurrentIndex(0)
         f = self.feature()
         for r in self.rows:
             r.setParent(None)
@@ -2978,6 +3487,7 @@ class FeaturesPage(Page):
                           + (f" · learned on a {f.learned_on}" if f.learned_on and f.learned_on != f.vehicle else "")
                           + f"<br>Hardware needed: {f.hardware_required or 'none'}"
                           + (f"<br>Source: {f.source}" if f.source else "")
+                          + (f"<br>{self.confidence(f)}" if self.confidence(f) else "")
                           + self.compat_html(f))
         for p in f.parts:
             row = PartRow(p, self.update_pending, self.s.tech)
@@ -3167,11 +3677,12 @@ class FeaturesPage(Page):
         self.share_btn.setVisible(f.verified and not f.library_id)
         n = sum(r.pending for r in self.rows)
         self.apply_btn.setText(f"Apply changes ({n})" if n else "Apply changes")
-        self.apply_btn.setEnabled(n > 0)
+        self.apply_btn.setEnabled(True)
         st = self.feature_state(f)
-        hint = {"not read": "Scan modules, or press Read status, to see what's on now",
+        self.hint.setText(self.next_step(f, st, n)[0])
+        hint = {"not read": "Hatchling hasn't read the car yet",
                 features.NOT_FOUND: "This car doesn't have a module this feature needs",
-                features.NEEDS_VALUES: "Add the block/byte/bit values to the feature file first"}.get(st, "")
+                features.NEEDS_VALUES: "Hatchling doesn't know where this is set on your car yet"}.get(st, "")
         self.overall.setText(f"<span style='color:{STATE_COLORS.get(st, MUTED)}'>{st.capitalize()}</span>"
                              + (f" <span style='color:{MUTED}'>- {hint}</span>" if hint else ""))
         # banner when some modules are done and others aren't
@@ -3191,6 +3702,7 @@ class FeaturesPage(Page):
                 r.toggle.blockSignals(True)
                 r.toggle.setChecked(checked)
                 r.toggle.blockSignals(False)
+                r.touched = True
         self.update_pending()
 
     # ---- adapter work -------------------------------------------------
@@ -3330,9 +3842,43 @@ class FeaturesPage(Page):
             self.s.per_bus(jobs, each, done)
         self._read_parts(parts, got_fresh)
 
+    def next_step(self, f: features.Feature, st: str, pending: int) -> Tuple[str, Optional[str]]:
+        """(plain explanation of what's needed next, action key or None if ready to apply)."""
+        if not self.s.connected:
+            return "Connect to the car first.", "connect"
+        if st == features.NEEDS_VALUES:
+            return ("Hatchling doesn't know where this feature is set on your car yet. Learn it from your car "
+                    "(or add it from the library) and the switches will unlock."), "learn"
+        if st in (features.NOT_FOUND, features.UNKNOWN):
+            return "Your car doesn't have a module this feature needs, or it didn't answer.", "none"
+        if st == "not read":
+            return "Hatchling needs to read the car to see whether this is on.", "read"
+        if not pending:
+            now = "on" if st == features.ENABLED else "off" if st == features.DISABLED else "partly on"
+            return (f"It's {now} right now. Flip the main switch (or a module's switch) to change it, then press "
+                    "Apply changes."), "none"
+        return f"Ready - press Apply changes to write {pending} module(s). A backup is made first.", None
+
     def apply_changes(self):
         f = self.feature()
-        if not f or not self.need_connection():
+        if not f:
+            return
+        rows_pending = sum(r.pending for r in self.rows)
+        msg, action = self.next_step(f, self.feature_state(f), rows_pending)
+        if action == "connect":
+            if QMessageBox.question(self, "Hatchling", msg + " Go to Connection now?") == QMessageBox.Yes:
+                self.s.go("Connect")
+            return
+        if action == "learn":
+            if QMessageBox.question(self, "Hatchling", msg + "<br><br>Learn it from your car now?") == QMessageBox.Yes:
+                self.s.open_learn(f.name)
+            return
+        if action == "read":
+            if QMessageBox.question(self, "Hatchling", msg + " Read it now?") == QMessageBox.Yes:
+                self.read_status()
+            return
+        if action == "none":
+            QMessageBox.information(self, "Hatchling", msg)
             return
         if not f.verified and not self.confirm.isChecked():
             QMessageBox.warning(self, "Hatchling", "This feature isn't marked verified. Tick the confirmation box "
@@ -3468,6 +4014,9 @@ class MainWindow(QMainWindow):
         self.nav.currentItemChanged.connect(self.on_nav)
         self.s.open_config = self.open_config
         self.s.focus_mode = self.focus_mode
+        self.s.go = self.go
+        self.s.open_learn = self.open_learn
+        self.s.open_factory_diff = self.open_factory_diff
         home = self.pages["Home"]
         home.go = self.go
         home.go_codes = lambda: self.pages["Fault codes"].read_all()
@@ -3509,6 +4058,26 @@ class MainWindow(QMainWindow):
 
     def go(self, key: str):
         self.nav.setCurrentRow(self.rows[key])
+
+    def open_learn(self, name: str = ""):
+        if not self.s.connected:
+            QMessageBox.information(self, "Hatchling", "Connect to the car first, then scan it.")
+            self.go("Connect")
+            return
+        if not self.s.modules:
+            QMessageBox.information(self, "Hatchling", "Scan the car first so Hatchling knows its modules.")
+            self.go("Modules")
+            return
+        LearnDialog(self, self.s, name).show()
+
+    def open_factory_diff(self):
+        self.go("Modules")
+        page = self.pages["Modules"]
+        if not self.s.factory:
+            QMessageBox.information(self, "Hatchling", "Import your car's factory file first (Modules > Import "
+                                                       "factory file), then scan the car.")
+            return
+        page.changes_since_factory()
 
     def on_nav(self, cur, _prev):
         key = cur.data(Qt.UserRole) if cur else None
