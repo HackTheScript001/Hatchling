@@ -3,6 +3,8 @@
   python tools/library_tool.py add      <issue-body-file> <issue-number>   approved "Share a feature" issue
   python tools/library_tool.py confirm  <issue-body-file> <github-login>   "Works on my car" issue
   python tools/library_tool.py index                                       rebuild library/index.json
+  python tools/library_tool.py factory-add <issue-body-file> <issue-number> approved "Share a factory file" issue
+  python tools/library_tool.py suggest                                     compare factory files, propose features
   python tools/library_tool.py check                                       validate every feature file
 
 Issue bodies are untrusted input: everything is validated, only known fields are kept,
@@ -22,6 +24,16 @@ LIB = os.path.join(ROOT, "library")
 FEATURES = os.path.join(LIB, "features")
 INDEX = os.path.join(LIB, "index.json")
 CONFIRMATIONS = os.path.join(LIB, "confirmations.json")
+FACTORY = os.path.join(ROOT, "factory-data")
+LABEL_RE = re.compile(r"^([0-9A-F]{3})-(\d{2})-(\d{2})$")
+OPTIONS = {
+    "Cruise control", "Speed limiter", "Auto headlights", "Rain-sensing wipers", "Front fog lights",
+    "LED daytime running lights", "Rear parking sensors", "Front parking sensors", "Reversing camera",
+    "Keyless entry", "Push-button start", "Heated windscreen", "Heated front seats", "Heated steering wheel",
+    "Automatic climate control", "Electric folding mirrors", "Tyre pressure monitoring", "SYNC infotainment",
+    "SYNC 3", "Satnav", "DAB radio", "Lane keeping aid", "Traffic sign recognition", "Automatic gearbox",
+}
+MIN_EACH_SIDE = 2   # cars with and without an option needed before proposing its bits
 
 MAX_BODY = 64 * 1024
 MAKES = {"Ford", "Lincoln", "Mercury", "Mazda", "Other"}
@@ -285,6 +297,129 @@ def build_index() -> dict:
     return index
 
 
+# ---- factory files: shared by owners, compared to find option bits ----------------------
+def validate_factory(d: Any) -> dict:
+    if not isinstance(d, dict) or d.get("schema") != 1:
+        raise Invalid("not a Hatchling factory file")
+    clean = lambda k, n: _text(d, k, n)
+    out = {"schema": 1, "make": clean("make", 20) or "Ford", "model": clean("model", 40),
+           "engine": clean("engine", 40), "trim": clean("trim", 40), "market": clean("market", 20)}
+    if out["make"] not in MAKES:
+        raise Invalid(f"make must be one of {sorted(MAKES)}")
+    if not re.match(r"^[A-Za-z0-9 .+/()-]{1,40}$", out["model"]):
+        raise Invalid("model is required (e.g. Fiesta Mk7)")
+    y = d.get("year")
+    out["year"] = _int(y, 1996, 2035, "year") if y not in (None, "") else None
+    opts = d.get("options", [])
+    if not isinstance(opts, list) or any(o not in OPTIONS for o in opts):
+        raise Invalid("options contain something Hatchling doesn't know")
+    out["options"] = sorted(set(opts))
+    lines = d.get("lines")
+    if not isinstance(lines, dict) or not 1 <= len(lines) <= 3000:
+        raise Invalid("the file needs As-Built lines")
+    out["lines"] = {}
+    for k, v in lines.items():
+        if not isinstance(k, str) or not LABEL_RE.match(k) or not 0x700 <= int(k[:3], 16) <= 0x7FF:
+            raise Invalid(f"bad line label {str(k)[:20]}")
+        if not isinstance(v, str) or not re.match(r"^([0-9A-F]{2}){1,32}$", v):
+            raise Invalid(f"bad data on line {k}")
+        if re.search(rb"[A-HJ-NPR-Z0-9]{17}", bytes.fromhex(v)):
+            raise Invalid(f"line {k} looks like it contains a VIN")
+        out["lines"][k] = v
+    if VIN_RE.search(json.dumps({k: out[k] for k in ("model", "engine", "trim", "market")}).upper()):
+        raise Invalid("the car details contain something that looks like a VIN")
+    return out
+
+
+def factory_add(body: str, issue: int) -> Tuple[str, str]:
+    f = issue_fields(body)
+    d = validate_factory(_json_from(f.get("factory file", "")))
+    folder = os.path.join(FACTORY, d["make"].lower(), slug(d["model"]))
+    path = os.path.join(folder, f"car-{int(issue)}.json")
+    d["shared_in_issue"] = int(issue)
+    _write_json(path, d)
+    suggest()
+    return slug(d["model"]), path
+
+
+def _blocks(lines: Dict[str, str]) -> Dict[Tuple[int, int], bytes]:
+    """(module, DID) -> bytes, dropping the trailing checksum byte when most lines carry one."""
+    parsed = {}
+    for k, v in lines.items():
+        m = LABEL_RE.match(k)
+        parsed[(int(m.group(1), 16), int(m.group(2)), int(m.group(3)))] = bytes.fromhex(v)
+    ok = sum(1 for (a, b, l), d in parsed.items()
+             if len(d) > 1 and (sum(d[:-1]) + (a >> 8) + (a & 0xFF) + b + l) & 0xFF == d[-1])
+    drop = parsed and ok / len(parsed) >= 0.6
+    out: Dict[Tuple[int, int], Dict[int, bytes]] = {}
+    for (a, b, l), d in parsed.items():
+        out.setdefault((a, 0xDE00 + b - 1), {})[l] = d[:-1] if drop and len(d) > 1 else d
+    return {k: b"".join(p[i] for i in sorted(p)) for k, p in out.items()}
+
+
+def suggest() -> Dict[str, list]:
+    """For every make/model with enough cars: bits that are set in every car WITH an option and in no
+    car WITHOUT it (or the reverse). Writes suggestions.json and a draft feature per option."""
+    results = {}
+    if not os.path.isdir(FACTORY):
+        return results
+    for make in sorted(os.listdir(FACTORY)):
+        for model in sorted(os.listdir(os.path.join(FACTORY, make))) if os.path.isdir(os.path.join(FACTORY, make)) else []:
+            folder = os.path.join(FACTORY, make, model)
+            cars = [validate_factory(_load_json(os.path.join(folder, fn), None))
+                    for fn in sorted(os.listdir(folder)) if fn.startswith("car-") and fn.endswith(".json")]
+            if len(cars) < 2 * MIN_EACH_SIDE:
+                continue
+            blocks = [_blocks(c["lines"]) for c in cars]
+            found = []
+            for opt in sorted(OPTIONS):
+                yes = [b for c, b in zip(cars, blocks) if opt in c["options"]]
+                no = [b for c, b in zip(cars, blocks) if opt not in c["options"]]
+                if len(yes) < MIN_EACH_SIDE or len(no) < MIN_EACH_SIDE:
+                    continue
+                keys = set.intersection(*(set(b) for b in yes + no))
+                bits = []
+                for key in sorted(keys):
+                    n = min(len(b[key]) for b in yes + no)
+                    for i in range(n):
+                        for bit in range(8):
+                            ys = {b[key][i] >> bit & 1 for b in yes}
+                            ns = {b[key][i] >> bit & 1 for b in no}
+                            if len(ys) == 1 and len(ns) == 1 and ys != ns:
+                                bits.append((key[0], key[1], i, bit, ys.pop()))
+                if not bits or len(bits) > 24:   # nothing, or too noisy to trust
+                    continue
+                mods: Dict[int, list] = {}
+                for addr, did, i, bit, on in bits:
+                    mods.setdefault(addr, []).append((did, i, bit, on))
+                draft = {"name": opt, "category": "From factory data",
+                         "description": f"Found by comparing {len(yes)} {model.replace('-', ' ')} cars with "
+                                        f"{opt.lower()} and {len(no)} without.",
+                         "learned_on": f"{len(cars)} factory files", "verified": False,
+                         "hardware_required": f"Whatever {opt.lower()} needs from the factory",
+                         "source": "Hatchling factory-file comparison", "hardware_checks": [], "modules": []}
+                for addr, items in sorted(mods.items()):
+                    changes: Dict[Tuple[int, int], Dict[str, int]] = {}
+                    for did, i, bit, on in items:
+                        c = changes.setdefault((did, i), {"mask": 0, "on": 0})
+                        c["mask"] |= 1 << bit
+                        c["on"] |= (on << bit)
+                    draft["modules"].append({
+                        "module": f"0x{addr:03X}", "bus": "HS" if addr in (0x7E0, 0x7E1, 0x760, 0x737, 0x730) else "MS",
+                        "label": f"Module {addr:03X}",
+                        "changes": [{"did": f"{did:04X}", "byte": i, "mask": f"0x{c['mask']:02X}",
+                                     "on": f"0x{c['on']:02X}", "off": f"0x{c['mask'] & ~c['on']:02X}"}
+                                    for (did, i), c in sorted(changes.items())]})
+                found.append({"option": opt, "with": len(yes), "without": len(no), "bits": len(bits),
+                              "draft": draft})
+                _write_json(os.path.join(folder, "proposed", f"{slug(opt)}.json"), draft)
+            _write_json(os.path.join(folder, "suggestions.json"),
+                        {"model": model, "cars": len(cars), "generated": time.strftime("%Y-%m-%d"),
+                         "suggestions": [{k: v for k, v in f.items() if k != "draft"} for f in found]})
+            results[f"{make}/{model}"] = found
+    return results
+
+
 def main(argv):
     if not argv:
         print(__doc__)
@@ -299,6 +434,16 @@ def main(argv):
             with open(argv[1], encoding="utf-8") as fh:
                 fid, n = confirm(fh.read(), argv[2])
             print(f"confirmed {fid} ({n} car(s))")
+        elif cmd == "factory-add" and len(argv) == 3:
+            with open(argv[1], encoding="utf-8") as fh:
+                model, path = factory_add(fh.read(), int(argv[2]))
+            print(f"added factory file for {model} -> {os.path.relpath(path, ROOT)}")
+        elif cmd == "suggest":
+            res = suggest()
+            for k, v in res.items():
+                print(f"{k}: " + (", ".join(f"{f['option']} ({f['bits']} bits)" for f in v) or "no clear options yet"))
+            if not res:
+                print("not enough factory files yet (need cars with and without each option)")
         elif cmd == "index":
             print(f"index: {len(build_index()['features'])} feature(s)")
         elif cmd == "check":

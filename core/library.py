@@ -234,3 +234,19 @@ def confirm_link(library_id: str, part: str = "") -> str:
 
 def entry_matches_make(entry: dict, make: Optional[str]) -> bool:
     return not make or entry.get("make") in (make, "Other")
+
+
+def factory_share_link(anon: dict) -> Tuple[str, str, bool]:
+    """(issue URL, file JSON, prefilled?) for the 'Share a factory file' form. Factory files are usually
+    too long for a link, so the caller copies the JSON to the clipboard for pasting."""
+    r = repo()
+    if not r:
+        raise LibraryError("No library repository set")
+    text = json.dumps(anon, indent=1)
+    base = f"https://github.com/{r}/issues/new?"
+    title = f"Factory file: {anon.get('year') or ''} {anon.get('make', '')} {anon.get('model', '')}".strip()
+    params = {"template": "share-factory.yml", "title": title[:120]}
+    full = base + urlencode({**params, "factory": text})
+    if len(full) <= MAX_URL:
+        return full, text, True
+    return base + urlencode(params), text, False

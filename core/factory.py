@@ -210,3 +210,41 @@ def compare_cars(own: FactoryData, donor: FactoryData) -> Dict[int, list]:
         if ch:
             out[addr] = ch
     return out
+
+
+# ---- sharing a factory file (anonymised) -------------------------------------------
+# Options owners tick so cars with and without each one can be compared.
+OPTIONS = [
+    "Cruise control", "Speed limiter", "Auto headlights", "Rain-sensing wipers", "Front fog lights",
+    "LED daytime running lights", "Rear parking sensors", "Front parking sensors", "Reversing camera",
+    "Keyless entry", "Push-button start", "Heated windscreen", "Heated front seats", "Heated steering wheel",
+    "Automatic climate control", "Electric folding mirrors", "Tyre pressure monitoring", "SYNC infotainment",
+    "SYNC 3", "Satnav", "DAB radio", "Lane keeping aid", "Traffic sign recognition", "Automatic gearbox",
+]
+_ASCII_VIN = re.compile(rb"[A-HJ-NPR-Z0-9]{17}")
+
+
+def anonymise(data: FactoryData, car: Dict[str, str], options: List[str]) -> dict:
+    """The factory file without anything that identifies the car: no VIN, and any line whose bytes
+    spell out a VIN (some modules keep one) is left out. car = {make, model, year, engine, trim, market}."""
+    lines = {}
+    dropped = 0
+    for (addr, block, line), b in sorted(data.lines.items()):
+        if _ASCII_VIN.search(b) or (data.vin and data.vin.encode() in b):
+            dropped += 1
+            continue
+        lines[f"{addr:03X}-{block:02d}-{line:02d}"] = b.hex().upper()
+    clean = lambda v, n: re.sub(r"[^A-Za-z0-9 .\-+/()]", "", str(v or ""))[:n].strip()
+    year = clean(car.get("year"), 4)
+    return {
+        "schema": 1,
+        "make": clean(car.get("make"), 20) or "Ford",
+        "model": clean(car.get("model"), 40),
+        "year": int(year) if year.isdigit() else None,
+        "engine": clean(car.get("engine"), 40),
+        "trim": clean(car.get("trim"), 40),
+        "market": clean(car.get("market"), 20),
+        "options": sorted({o for o in options if o in OPTIONS}),
+        "lines": lines,
+        "dropped_lines": dropped,
+    }
