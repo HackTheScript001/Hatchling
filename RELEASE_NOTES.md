@@ -1,13 +1,12 @@
-Beta testing release - thanks for trying Hatchling. This one reworks the Features page.
+Beta testing release - thanks for trying Hatchling.
 
-**Download `Hatchling-Setup-1.1.0.exe` below** and run it (it updates 1.0.0 in place). Windows may show "Windows protected your PC" because the installer isn't code-signed yet - click **More info**, then **Run anyway**.
+**Download `Hatchling-Setup-1.2.0.exe` below** and run it (it updates your current version in place). Windows may show "Windows protected your PC" because the installer isn't code-signed yet - click **More info**, then **Run anyway**.
 
 What's new
-- **Features page rework** - features are grouped into On, Off and "In the library for your car", demo features are hidden when you're connected to a real car, and every feature shows how well tested it is on cars with your modules.
-- **Apply changes always explains itself** - if something's missing (not connected, car not read yet, feature not learned yet) it tells you what and takes you there.
-- **Learn a feature from my car** - take a before snapshot, change one setting with your usual tool, take an after snapshot, and Hatchling saves exactly what changed.
-- **Share my factory file** - share your car's factory file (VIN removed) and the options it came with, so features can be found by comparing cars instead of trial and error.
-- Fixed: a module that was only partly set couldn't be switched fully off.
+- **Get my factory file** (Modules) - copies your VIN, opens Ford's As-Built page so you can download your car's factory file with your own free account, then spots the download and imports it automatically.
+- **VIN details on Home** - model, body, engine and more from the free NHTSA VIN database (fullest for North American cars; European cars may show fewer details).
+- **Community page** - see the latest questions, feedback and shared files from other owners inside Hatchling; ask a question or leave feedback on GitHub.
+- **Automatic adapter speed** - Hatchling now finds your adapter's speed (baud) itself and remembers it. You can still pick one by hand.
 
 **Use at your own risk.** Hatchling writes to your car's modules. Keep a battery charger connected when making changes, and import your factory file before changing anything.
 

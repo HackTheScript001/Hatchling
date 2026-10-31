@@ -281,3 +281,29 @@ class ELM327:
 
     def close(self):
         self.t.close()
+
+
+BAUD_CANDIDATES = (38400, 115200, 57600, 500000, 9600, 230400)
+
+
+def find_baud(port: str, preferred: Optional[int] = None, make_transport=None,
+              log: Callable[[str], None] = lambda s: None) -> int:
+    """Tries each common speed with a quick ATI and returns the first that answers like an ELM327.
+    make_transport(port, baud) lets tests supply a fake adapter."""
+    make = make_transport or (lambda p, b: SerialTransport(p, b))
+    order = ([preferred] if preferred else []) + [b for b in BAUD_CANDIDATES if b != preferred]
+    for baud in order:
+        try:
+            t = make(port, baud)
+        except Exception as e:  # port busy / missing
+            raise ElmError(f"Couldn't open {port}: {e}")
+        try:
+            r = t.send("ATI", timeout=1.0)
+            if any("ELM" in line.upper() for line in r):
+                log(f"Adapter answered at {baud} baud")
+                return baud
+        except ElmError:
+            pass
+        finally:
+            t.close()
+    raise ElmError(f"No adapter answered on {port} at any speed. Check it's plugged in and the ignition is on.")

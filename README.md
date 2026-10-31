@@ -147,6 +147,18 @@ version, and a wrong value can disable things, so they need to come from your ow
 3. Configuration → Load backup on your module highlights every byte that differs.
 4. Narrow it to the bits that matter, write those, test, then save them as a feature file.
 
+## Getting your factory file
+
+Modules > **Get my factory file** copies your VIN and opens Ford's As-Built page. Sign in with your own free
+Ford account, paste the VIN and download the file - Hatchling watches your Downloads folder and imports it
+automatically (it checks the VIN matches the connected car). If Ford moves the page, set `"factory_url"` in
+`Documents\Hatchling\settings.json`.
+
+## Community
+
+The **Community** page lists the latest feedback, shared features and factory files from the repo (no account
+needed to read). **Ask a question** and **Browse discussions** need Discussions turned on in the repo settings.
+
 ## Factory As-Built (do this first)
 
 Before changing anything, get your car's factory configuration from Ford: on
