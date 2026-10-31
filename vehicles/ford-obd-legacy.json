@@ -1,0 +1,20 @@
+{
+  "id": "ford-obd-legacy",
+  "make": "Ford",
+  "name": "Ford/Lincoln/Mercury before CAN (1996-2007)",
+  "models": "Focus Mk1, Fiesta Mk4/Mk5, Mondeo Mk1-Mk3, Ka, Puma (1997), Escort, Crown Victoria, Taurus, Explorer (to 2005), Ranger (to 2011), F-150 (to 2003), Mustang (to 2004)",
+  "years": [
+    1996,
+    2007
+  ],
+  "buses": [
+    "OBD"
+  ],
+  "matches_makes": [
+    "Ford",
+    "Lincoln",
+    "Mercury"
+  ],
+  "notes": "Engine fault codes, clearing and live data over J1850 PWM or ISO 9141. Body module access on these needs a Ford SCP-capable tool.",
+  "priority": 5
+}

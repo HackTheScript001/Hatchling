@@ -1,0 +1,42 @@
+[
+  {
+    "module": "0x726",
+    "bus": "MS",
+    "did": "0x4028",
+    "name": "Battery charge (sim)",
+    "unit": "%",
+    "formula": "A",
+    "lo": 0,
+    "hi": 100
+  },
+  {
+    "module": "0x726",
+    "bus": "MS",
+    "did": "0x402A",
+    "name": "Battery voltage (sim)",
+    "unit": "V",
+    "formula": "(A*256+B)/1000",
+    "lo": 10,
+    "hi": 15
+  },
+  {
+    "module": "0x726",
+    "bus": "MS",
+    "did": "0xD111",
+    "name": "Interior temp (sim)",
+    "unit": "\u00b0C",
+    "formula": "signed8(A)",
+    "lo": -10,
+    "hi": 40
+  },
+  {
+    "module": "0x760",
+    "bus": "HS",
+    "did": "0x2B06",
+    "name": "Steering angle (sim)",
+    "unit": "\u00b0",
+    "formula": "signed16(A, B)",
+    "lo": -90,
+    "hi": 90
+  }
+]

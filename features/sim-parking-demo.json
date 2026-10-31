@@ -1,0 +1,35 @@
+{
+  "id": "sim-parking-demo",
+  "name": "Rear parking sensors (simulator demo)",
+  "category": "Simulator",
+  "description": "Shows what happens when hardware is missing: the simulated car has no parking aid module, so this feature can't be enabled.",
+  "vehicle": "SIMULATOR ONLY",
+  "verified": true,
+  "source": "Built into the Hatchling simulator",
+  "hardware_required": "Parking aid module and rear sensors",
+  "hardware_checks": [
+    {
+      "type": "module_present",
+      "label": "Parking aid module (PAM) answering on MS-CAN",
+      "bus": "MS",
+      "module": "0x736",
+      "help": "Fit the PAM and sensors, then check again."
+    }
+  ],
+  "modules": [
+    {
+      "module": "0x726",
+      "bus": "MS",
+      "label": "BCM - parking aid config",
+      "changes": [
+        {
+          "did": "DE03",
+          "byte": 0,
+          "mask": "0x08",
+          "on": "0x08",
+          "off": "0x00"
+        }
+      ]
+    }
+  ]
+}

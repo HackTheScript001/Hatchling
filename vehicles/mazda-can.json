@@ -1,0 +1,19 @@
+{
+  "id": "mazda-can",
+  "make": "Mazda",
+  "name": "Mazda with HS-CAN + MS-CAN (about 2004+)",
+  "models": "Mazda2, Mazda3, Mazda5, Mazda6, CX-5, CX-7, CX-9, MX-5 (NC/ND), BT-50",
+  "years": [
+    2004,
+    2026
+  ],
+  "buses": [
+    "HS",
+    "MS"
+  ],
+  "matches_makes": [
+    "Mazda"
+  ],
+  "notes": "Shares much of Ford's diagnostic layout. Module addresses differ from Ford in places - use Full scan.",
+  "priority": 8
+}

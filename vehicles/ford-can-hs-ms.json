@@ -1,0 +1,21 @@
+{
+  "id": "ford-can-hs-ms",
+  "make": "Ford",
+  "name": "Ford with HS-CAN + MS-CAN (about 2004-2019)",
+  "models": "Fiesta Mk6/Mk7, Focus Mk2/Mk3, C-Max, Kuga Mk1/Mk2, Mondeo Mk4, S-Max/Galaxy, Transit/Transit Connect/Custom, Ka+, EcoSport, B-Max, Ranger (PX), Fusion, Escape, Edge, Explorer, F-150 (2009-2014)",
+  "years": [
+    2004,
+    2019
+  ],
+  "buses": [
+    "HS",
+    "MS"
+  ],
+  "matches_makes": [
+    "Ford",
+    "Lincoln",
+    "Mercury"
+  ],
+  "notes": "Most common layout. Body, cluster, audio and SYNC on MS-CAN.",
+  "priority": 10
+}

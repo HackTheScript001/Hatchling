@@ -1,0 +1,34 @@
+{
+  "id": "sim-auto-lights-demo",
+  "name": "Auto headlights (simulator demo)",
+  "category": "Simulator",
+  "description": "Single-module simulator example. Only works with the Simulator connection.",
+  "vehicle": "SIMULATOR ONLY",
+  "verified": true,
+  "source": "Built into the Hatchling simulator",
+  "hardware_required": "None",
+  "modules": [
+    {
+      "module": "0x726",
+      "bus": "MS",
+      "label": "BCM - lighting",
+      "changes": [
+        {
+          "did": "DE00",
+          "byte": 1,
+          "mask": "0x80",
+          "on": "0x80",
+          "off": "0x00"
+        }
+      ]
+    }
+  ],
+  "hardware_checks": [
+    {
+      "type": "module_present",
+      "label": "Body module answering on MS-CAN",
+      "bus": "MS",
+      "module": "0x726"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+[
+  {
+    "module": "0x726",
+    "bus": "MS",
+    "did": "0x0000",
+    "name": "Example value",
+    "unit": "",
+    "formula": "A",
+    "lo": 0,
+    "hi": 255
+  }
+]

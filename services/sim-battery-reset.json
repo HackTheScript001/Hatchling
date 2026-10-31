@@ -1,0 +1,42 @@
+{
+  "id": "sim-battery-reset",
+  "name": "Battery monitor reset (simulator demo)",
+  "category": "Simulator",
+  "description": "Tells the body module a new battery has been fitted so charging is re-learned. Simulator only.",
+  "vehicle": "SIMULATOR ONLY",
+  "verified": true,
+  "source": "Built into the Hatchling simulator",
+  "bus": "MS",
+  "module": "0x726",
+  "module_label": "BCM - Body",
+  "preconditions": [
+    "Ignition on, engine off",
+    "New battery fitted"
+  ],
+  "steps": [
+    {
+      "type": "prompt",
+      "text": "Confirm the new battery is fitted and the ignition is ON."
+    },
+    {
+      "type": "session",
+      "session": "0x03"
+    },
+    {
+      "type": "routine",
+      "id": "0x0F01",
+      "action": "start"
+    },
+    {
+      "type": "results",
+      "id": "0x0F01",
+      "poll": 10,
+      "interval": 0.5,
+      "done": "00"
+    },
+    {
+      "type": "prompt",
+      "text": "Battery monitor reset. Leave the car locked for 8 hours so the system can relearn."
+    }
+  ]
+}

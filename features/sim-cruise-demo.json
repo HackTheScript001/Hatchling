@@ -1,0 +1,84 @@
+{
+  "id": "sim-cruise-demo",
+  "name": "Cruise control (simulator demo)",
+  "category": "Simulator",
+  "description": "Practice version of a multi-module feature. Only works with the Simulator connection - it flips bits in the fake PCM, body module and cluster.",
+  "vehicle": "SIMULATOR ONLY",
+  "verified": true,
+  "source": "Built into the Hatchling simulator",
+  "hardware_required": "None",
+  "modules": [
+    {
+      "module": "0x7E0",
+      "bus": "HS",
+      "label": "PCM - cruise function",
+      "changes": [
+        {
+          "did": "DE01",
+          "byte": 2,
+          "mask": "0x02",
+          "on": "0x02",
+          "off": "0x00"
+        }
+      ]
+    },
+    {
+      "module": "0x726",
+      "bus": "MS",
+      "label": "BCM - switch input",
+      "changes": [
+        {
+          "did": "DE01",
+          "byte": 2,
+          "mask": "0x04",
+          "on": "0x04",
+          "off": "0x00"
+        }
+      ]
+    },
+    {
+      "module": "0x720",
+      "bus": "MS",
+      "label": "IPC - cluster display",
+      "changes": [
+        {
+          "did": "DE01",
+          "byte": 1,
+          "mask": "0x10",
+          "on": "0x10",
+          "off": "0x00"
+        }
+      ]
+    }
+  ],
+  "hardware_checks": [
+    {
+      "type": "manual",
+      "label": "Cruise control switches fitted on the steering wheel",
+      "help": "Simulator demo - just tick it."
+    },
+    {
+      "type": "module_present",
+      "label": "PCM answering on HS-CAN",
+      "bus": "HS",
+      "module": "0x7E0"
+    },
+    {
+      "type": "did_value",
+      "label": "Switch pack reported by PCM",
+      "bus": "HS",
+      "module": "0x7E0",
+      "did": "DE00",
+      "byte": 0,
+      "mask": "0x40",
+      "value": "0x40",
+      "help": "Simulator demo - reads a status bit from the fake PCM."
+    },
+    {
+      "type": "module_present",
+      "label": "Instrument cluster answering on MS-CAN",
+      "bus": "MS",
+      "module": "0x720"
+    }
+  ]
+}

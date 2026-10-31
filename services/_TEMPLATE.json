@@ -1,0 +1,43 @@
+{
+  "id": "example-procedure",
+  "name": "Example procedure",
+  "category": "Brakes",
+  "description": "What this procedure does and when you need it.",
+  "vehicle": "Which cars you've checked it on",
+  "verified": false,
+  "source": "Where the routine IDs came from",
+  "bus": "HS",
+  "module": "0x760",
+  "module_label": "ABS - Brakes",
+  "preconditions": [
+    "Ignition on, engine off",
+    "Battery charger connected"
+  ],
+  "steps": [
+    {
+      "type": "prompt",
+      "text": "Something the user must do first"
+    },
+    {
+      "type": "session",
+      "session": "0x03"
+    },
+    {
+      "type": "routine",
+      "id": "0x0000",
+      "action": "start",
+      "data": ""
+    },
+    {
+      "type": "results",
+      "id": "0x0000",
+      "poll": 20,
+      "interval": 1.0,
+      "done": "00"
+    },
+    {
+      "type": "prompt",
+      "text": "Done - what the user should check"
+    }
+  ]
+}
