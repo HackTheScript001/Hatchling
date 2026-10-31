@@ -21,11 +21,11 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget,
 )
 
-from core import (asbuilt, dtc, factory, features, finder, history, library, livedata, modules, paths, report, services, updates,
+from core import (asbuilt, dtc, factory, features, finder, history, library, online, livedata, modules, paths, report, services, updates,
                   vehicles, vin)
 from core.version import VERSION
 from core.buses import BUSES, OBD
-from core.elm import DRIVER_PAGES, ELM327, HS, MS, ElmError, SerialTransport, describe_ports
+from core.elm import DRIVER_PAGES, ELM327, HS, MS, ElmError, SerialTransport, describe_ports, find_baud
 from core.obd import GenericObd
 from core.modules import Module
 from core.pids import PIDS
@@ -296,6 +296,12 @@ class HomePage(Page):
         self.carline.setWordWrap(True)
         self.root.addWidget(self.carname)
         self.root.addWidget(self.carline)
+        self.vin_card = QLabel("")
+        self.vin_card.setWordWrap(True)
+        self.vin_card.setTextFormat(Qt.RichText)
+        self.vin_card.setObjectName("subtle")
+        self.root.addWidget(self.vin_card)
+        self.vin_details: Dict[str, str] = {}
         self.connect_btn = button("Connect to the car", "primary")
         self.connect_btn.clicked.connect(lambda: self.go("Connect"))
         crow = QHBoxLayout()
@@ -365,12 +371,26 @@ class HomePage(Page):
         self.root.addStretch()
 
         self.counts = {"codes": None, "features": None}
-        s.connected_changed.connect(lambda _: self.refresh())
+        s.connected_changed.connect(self.on_connected)
         s.modules_changed.connect(self.refresh)
         s.factory_changed.connect(self.refresh)
         s.codes_read.connect(lambda n: (self.counts.__setitem__("codes", n), self.refresh()))
         s.features_detected.connect(self.on_features)
         self.refresh()
+
+    def on_connected(self, ok: bool):
+        self.vin_details = {}
+        self.refresh()
+        if ok and self.s.vin and not self.s.simulated:
+            year = self.s.vin_info.year if self.s.vin_info else None
+            vin_txt = self.s.vin
+
+            def got(d):
+                if self.s.vin == vin_txt:
+                    self.vin_details = d
+                    self.refresh()
+            self.s.runner.run(lambda: online.vin_details(vin_txt, year), got,
+                              lambda e: self.s.log(f"VIN details not available: {e}"))
 
     def on_features(self, payload):
         on = sum(1 for parts in payload["states"].values()
@@ -390,10 +410,12 @@ class HomePage(Page):
         s = self.s
         if s.connected:
             info = s.vin_info
-            if info:
-                self.carname.setText(f"{info.make}, {info.year}" if info.year else info.make)
-            else:
-                self.carname.setText("Connected")
+            d = self.vin_details
+            make = (d.get("Make") or (info.make if info else "")).title() if (d.get("Make") or info) else ""
+            model = d.get("Model", "")
+            year = d.get("Model year") or (str(info.year) if info and info.year else "")
+            name = " ".join(x for x in (make, model) if x) or "Connected"
+            self.carname.setText(f"{name}, {year}" if year else name)
             bits = [f"VIN {s.vin}" if s.vin else "VIN not read"]
             if s.profile:
                 bits.append(s.profile.name)
@@ -403,6 +425,19 @@ class HomePage(Page):
             self.carname.setText("No car connected")
             self.carline.setText("Plug the adapter into the port under the dashboard and switch the ignition on.")
             self.connect_btn.show()
+        d = self.vin_details
+        if s.connected and d:
+            keep = [k for k in ("Body", "Engine size (L)", "Engine", "Fuel", "Gearbox", "Trim", "Built in",
+                                "Country built") if d.get(k)]
+            parts = []
+            for k in keep:
+                v = html.escape(d[k])
+                parts.append(f"{k}: <b>{v}{' L' if k == 'Engine size (L)' else ''}</b>".replace("Engine size (L)",
+                                                                                              "Engine size"))
+            self.vin_card.setText(" &nbsp; ".join(parts) + "<br><span style='font-size:9pt'>VIN details from the "
+                                  "NHTSA VIN database - fullest for North American cars.</span>" if parts else "")
+        else:
+            self.vin_card.setText("")
         self.figs["battery"].setText(f"{s.voltage:.1f} V" if s.connected and s.voltage else "-")
         n_mods = len({m.addr for m in s.modules.values()})
         self.figs["modules"].setText(str(n_mods) if n_mods else "-")
@@ -428,7 +463,9 @@ class ConnectPage(Page):
         grid = QGridLayout()
         self.port = QComboBox()
         self.baud = QComboBox()
-        self.baud.addItems(["38400", "115200", "57600", "500000"])
+        self.baud.addItems(["Automatic", "38400", "115200", "57600", "500000"])
+        self.baud.setToolTip("How fast the laptop talks to the adapter. Automatic tries each speed and remembers "
+                             "the one that works.")
         self.vehicle = QComboBox()
         self.vehicle.setMinimumWidth(360)
         self.vehicle.addItem(AUTO, None)
@@ -521,13 +558,20 @@ class ConnectPage(Page):
         port = self.port.currentData() or self.port.currentText()
         sim = port in (SIM, SIM_OLD)
         legacy = port == SIM_OLD
-        baud = int(self.baud.currentText())
+        baud_choice = self.baud.currentText()
+        remembered = library.settings().get("baud_by_port", {}).get(port)
         trace = self.trace.isChecked()
         chosen = self.selected_profile()
         self.btn.setEnabled(False)
         self.info.setText("Connecting...")
 
         def connect():
+            if sim:
+                baud = 38400
+            elif baud_choice == "Automatic":
+                baud = find_baud(port, remembered, log=self.s.log)
+            else:
+                baud = int(baud_choice)
             t = SimTransport(legacy=legacy) if sim else SerialTransport(port, baud)
             elm = ELM327(t, log=self.s.log)
             elm.trace = trace
@@ -556,10 +600,14 @@ class ConnectPage(Page):
             except Exception:
                 t.close()
                 raise
-            return elm, uds, obd, v, vin_txt, has_can, proto
+            return elm, uds, obd, v, vin_txt, has_can, proto, baud
 
         def ok(res):
-            elm, uds, obd, v, vin_txt, has_can, proto = res
+            elm, uds, obd, v, vin_txt, has_can, proto, baud = res
+            if not sim:
+                cfg = library.settings()
+                cfg.setdefault("baud_by_port", {})[port] = baud
+                library.save_settings(cfg)
             s = self.s
             s.elm, s.uds, s.obd = elm, uds, obd
             s.simulated = sim
@@ -627,8 +675,17 @@ class ModulesPage(Page):
         frow = QHBoxLayout()
         self.factory_label = QLabel("")
         self.factory_label.setWordWrap(True)
+        self.get_btn = button("Get my factory file", "primary")
+        self.get_btn.setToolTip("Opens Ford's As-Built page with your VIN copied, then imports the download "
+                                "automatically")
+        self.get_btn.clicked.connect(self.get_factory_file)
         self.import_btn = button("Import factory file")
         self.import_btn.clicked.connect(lambda: import_factory_file(self, self.s))
+        self.watch_timer = QTimer(self)
+        self.watch_timer.setInterval(2000)
+        self.watch_timer.timeout.connect(self.check_downloads)
+        self.watch_since = 0.0
+        self.watch_tried: set = set()
         self.diff_btn = button("Changes since factory")
         self.diff_btn.clicked.connect(self.changes_since_factory)
         self.donor_btn = button("Compare with donor car")
@@ -636,6 +693,7 @@ class ModulesPage(Page):
         self.share_fac_btn = button("Share my factory file")
         self.share_fac_btn.clicked.connect(lambda: ShareFactoryDialog(self, self.s).exec())
         frow.addWidget(self.factory_label, 1)
+        frow.addWidget(self.get_btn)
         frow.addWidget(self.import_btn)
         frow.addWidget(self.diff_btn)
         frow.addWidget(self.donor_btn)
@@ -712,6 +770,49 @@ class ModulesPage(Page):
                            "features": {k: v for k, v in groups.items()}})
         self.feat_label.setText("")
         self.s.per_bus({b: job(b) for b in self.s.scan_buses()}, each, done)
+
+    def get_factory_file(self):
+        """Copies the VIN, opens Ford's As-Built page and watches Downloads for the file."""
+        if not self.s.connected or not self.s.vin:
+            QMessageBox.information(self, "Hatchling", "Connect to the car first so Hatchling can read its VIN.")
+            return
+        QApplication.clipboard().setText(self.s.vin)
+        url = library.settings().get("factory_url") or online.FACTORY_URL
+        QMessageBox.information(
+            self, "Get my factory file",
+            f"Your VIN <b>{self.s.vin}</b> is copied.<br><br>"
+            "1. Ford's As-Built page opens in your browser - sign in with your own free account (or create one).<br>"
+            "2. Paste the VIN (Ctrl+V) and download the As-Built file.<br><br>"
+            "Leave Hatchling open - it spots the file in your Downloads folder and imports it automatically.")
+        open_url(url)
+        self.watch_since = time.time()
+        self.watch_tried = set()
+        self.watch_started = time.time()
+        self.watch_timer.start()
+        self.factory_label.setText(f"<span style='color:{WARN}'>●</span> Waiting for the factory file in "
+                                   f"{online.downloads_dir()} ...")
+        self.s.log("Watching Downloads for the factory file")
+
+    def check_downloads(self):
+        if time.time() - self.watch_started > 15 * 60:
+            self.watch_timer.stop()
+            self.s.log("Stopped watching Downloads (15 minutes)")
+            self.show_factory()
+            return
+        for path in online.new_factory_files(online.downloads_dir(), self.watch_since):
+            if path in self.watch_tried:
+                continue
+            self.watch_tried.add(path)
+            try:
+                data = factory.load_file(path)
+            except (OSError, factory.FactoryError, ValueError):
+                continue        # not an As-Built file (or still downloading) - keep watching
+            if data.vin and self.s.vin and data.vin != self.s.vin:
+                continue        # someone else's file
+            self.watch_timer.stop()
+            self.s.log(f"Found factory file: {path}")
+            import_factory_path(self, self.s, path)
+            return
 
     def show_factory(self):
         f = self.s.factory
@@ -1406,6 +1507,10 @@ def import_factory_file(parent, s: "Session") -> bool:
                                           "As-Built files (*.ab *.xml *.txt *.htm *.html);;All files (*.*)")
     if not path:
         return False
+    return import_factory_path(parent, s, path)
+
+
+def import_factory_path(parent, s: "Session", path: str) -> bool:
     try:
         data = factory.load_file(path)
     except (OSError, factory.FactoryError, ValueError) as e:
@@ -2698,6 +2803,82 @@ class LibraryPage(Page):
         self.s.runner.run(lambda: library.get(e), ok)
 
 
+# ---------------------------------------------------------------- Community
+class CommunityPage(Page):
+    def __init__(self, s):
+        super().__init__(s, "Community", "What other owners are asking, sharing and reporting. Reading needs no "
+                                         "account - posting opens GitHub, where a free account lets you join in.")
+        row = QHBoxLayout()
+        ask = button("Ask a question", "primary")
+        ask.clicked.connect(lambda: self.open_path("discussions/new?category=q-a"))
+        browse = button("Browse discussions")
+        browse.clicked.connect(lambda: self.open_path("discussions"))
+        fb = button("Give feedback or report a problem")
+        fb.clicked.connect(lambda: self.open_path("issues/new?template=feedback.yml"))
+        self.refresh_btn = button("Refresh")
+        self.refresh_btn.clicked.connect(self.refresh)
+        for b in (ask, browse, fb):
+            row.addWidget(b)
+        row.addStretch()
+        row.addWidget(self.refresh_btn)
+        self.root.addLayout(row)
+        self.status = QLabel("")
+        self.status.setObjectName("subtle")
+        self.root.addWidget(self.status)
+        self.tbl = table(["What", "Title", "By", "Replies", "Updated"])
+        self.tbl.itemDoubleClicked.connect(lambda _: self.open_current())
+        self.root.addWidget(self.tbl, 1)
+        tip = QLabel("Double-click a post to open it.")
+        tip.setObjectName("subtle")
+        self.root.addWidget(tip)
+        self.posts: List[dict] = []
+        self.loaded = False
+
+    def showEvent(self, e):
+        if not self.loaded:
+            self.loaded = True
+            self.refresh()
+        super().showEvent(e)
+
+    def open_path(self, path: str):
+        r = library.repo()
+        if not r:
+            QMessageBox.information(self, "Hatchling", "Set the GitHub repository first (Feature library > "
+                                                       "Library settings).")
+            return
+        open_url(f"https://github.com/{r}/{path}")
+
+    def open_current(self):
+        r = self.tbl.currentRow()
+        if 0 <= r < len(self.posts) and self.posts[r]["url"].startswith("https://github.com/"):
+            open_url(self.posts[r]["url"])
+
+    def refresh(self):
+        r = library.repo()
+        if not r:
+            self.status.setText("Set the GitHub repository in Feature library > Library settings.")
+            return
+        self.status.setText("Loading...")
+
+        def ok(posts):
+            self.posts = posts
+            self.tbl.setRowCount(0)
+            for p in posts:
+                i = self.tbl.rowCount()
+                self.tbl.insertRow(i)
+                kind = online.post_kind(p["labels"])
+                vals = [kind, p["title"] + ("" if p["state"] == "open" else "  (closed)"), p["by"],
+                        str(p["comments"]), p["updated"]]
+                for c, v in enumerate(vals):
+                    self.tbl.setItem(i, c, item(v, ACCENT if c == 0 else MUTED if p["state"] != "open" and c == 1 else None))
+            self.status.setText(f"{len(posts)} recent post(s)" if posts else
+                                "Nothing yet - be the first to ask a question or give feedback.")
+
+        def err(e):
+            self.status.setText(f"Couldn't load posts - {e}. You can still use the buttons above.")
+        self.s.runner.run(lambda: online.community_posts(r), ok, err)
+
+
 # ---------------------------------------------------------------- Service
 class ServicePage(Page):
     RESTART = "__restart__"
@@ -3983,7 +4164,7 @@ class MainWindow(QMainWindow):
                           ("Library", "Feature library", LibraryPage), ("Modules", "Modules", ModulesPage),
                           ("Service", "Service jobs", ServicePage), ("Configuration", "Module settings", AsBuiltPage),
                           ("History", "History", HistoryPage)]),
-            ("Setup", [("Connect", "Connection", ConnectPage)]),
+            ("Setup", [("Connect", "Connection", ConnectPage), ("Community", "Community", CommunityPage)]),
         ]
         brand = QListWidgetItem(QIcon(paths.asset("logo.png")), "  Hatchling")
         brand.setFlags(Qt.NoItemFlags)
