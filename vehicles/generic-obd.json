@@ -1,0 +1,16 @@
+{
+  "id": "generic-obd",
+  "make": "Any",
+  "name": "Any car - generic OBD-II only",
+  "models": "Anything with an OBD-II port (1996+ US, 2001+ EU petrol, 2004+ EU diesel)",
+  "years": [
+    1996,
+    2026
+  ],
+  "buses": [
+    "OBD"
+  ],
+  "matches_makes": [],
+  "notes": "Engine codes and standard live data only.",
+  "priority": 0
+}

@@ -1,0 +1,21 @@
+{
+  "id": "ford-early-can",
+  "make": "Ford",
+  "name": "Early Ford CAN with KWP2000 modules (about 2003-2010)",
+  "models": "Focus Mk2 (early), Fiesta Mk6, Fusion (EU), Mondeo Mk3 (late), C-Max (early), Transit Mk6/Mk7, F-150 (2008-2010), Escape (2008+)",
+  "years": [
+    2003,
+    2010
+  ],
+  "buses": [
+    "HS",
+    "MS"
+  ],
+  "matches_makes": [
+    "Ford",
+    "Mercury",
+    "Lincoln"
+  ],
+  "notes": "Fault codes are read with KWP2000 when a module doesn't speak UDS. Configuration support varies module by module.",
+  "priority": 4
+}

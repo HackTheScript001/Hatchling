@@ -1,0 +1,43 @@
+{
+  "id": "cruise-control",
+  "name": "Cruise control",
+  "category": "Driving",
+  "description": "Turns on cruise control after the steering-wheel cruise switches are fitted. Fill in the block, byte and bit values for each module from your own research, then set verified to true once tested.",
+  "vehicle": "Fiesta Mk7 - values not filled in yet",
+  "verified": false,
+  "source": "",
+  "hardware_required": "Cruise control switches on the steering wheel (and matching clockspring if needed)",
+  "modules": [
+    {
+      "module": "0x7E0",
+      "bus": "HS",
+      "label": "PCM - cruise function",
+      "changes": []
+    },
+    {
+      "module": "0x720",
+      "bus": "MS",
+      "label": "IPC - cluster display",
+      "changes": []
+    }
+  ],
+  "hardware_checks": [
+    {
+      "type": "manual",
+      "label": "Cruise control switches fitted on the steering wheel",
+      "help": "Look at the right-hand steering wheel spoke for the cruise ON/SET/RES buttons."
+    },
+    {
+      "type": "module_present",
+      "label": "PCM answering on HS-CAN",
+      "bus": "HS",
+      "module": "0x7E0"
+    },
+    {
+      "type": "module_present",
+      "label": "Instrument cluster answering on MS-CAN",
+      "bus": "MS",
+      "module": "0x720"
+    }
+  ]
+}

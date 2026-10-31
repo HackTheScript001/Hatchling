@@ -1,0 +1,47 @@
+{
+  "id": "sim-steering-cal",
+  "name": "Steering angle calibration (simulator demo)",
+  "category": "Simulator",
+  "description": "Re-centres the steering angle sensor after alignment work. Simulator only.",
+  "vehicle": "SIMULATOR ONLY",
+  "verified": true,
+  "source": "Built into the Hatchling simulator",
+  "bus": "HS",
+  "module": "0x760",
+  "module_label": "ABS - Brakes",
+  "preconditions": [
+    "Wheels pointing straight ahead",
+    "Engine running, car stationary"
+  ],
+  "steps": [
+    {
+      "type": "prompt",
+      "text": "Point the wheels straight ahead and keep the steering wheel still."
+    },
+    {
+      "type": "session",
+      "session": "0x03"
+    },
+    {
+      "type": "routine",
+      "id": "0x0E02",
+      "action": "start"
+    },
+    {
+      "type": "results",
+      "id": "0x0E02",
+      "poll": 15,
+      "interval": 0.5,
+      "done": "00"
+    },
+    {
+      "type": "reset",
+      "reset_type": "0x01",
+      "settle": 1
+    },
+    {
+      "type": "prompt",
+      "text": "Calibration done. Turn lock to lock once, then check the warning lights are off."
+    }
+  ]
+}

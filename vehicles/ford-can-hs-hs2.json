@@ -1,0 +1,21 @@
+{
+  "id": "ford-can-hs-hs2",
+  "make": "Ford",
+  "name": "Ford with second HS-CAN on pins 3/11 (about 2015+)",
+  "models": "F-150 (2015+), Mustang (S550), Edge (2015+), Explorer (2016+), Expedition, Super Duty (2017+), Ranger (2019+ NA), Bronco, Maverick, Puma, Fiesta Mk8, Focus Mk4, Kuga Mk3",
+  "years": [
+    2015,
+    2026
+  ],
+  "buses": [
+    "HS",
+    "HS2",
+    "MS"
+  ],
+  "matches_makes": [
+    "Ford",
+    "Lincoln"
+  ],
+  "notes": "Pins 3/11 carry a 500k bus on many of these. Hatchling tries both speeds when scanning in auto mode. Some 2020+ models have a gateway that limits writes.",
+  "priority": 6
+}

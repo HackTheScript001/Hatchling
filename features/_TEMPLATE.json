@@ -1,0 +1,63 @@
+{
+  "id": "example-feature",
+  "name": "Example feature",
+  "category": "Driving",
+  "description": "What turning this on does, in plain words.",
+  "vehicle": "Fiesta Mk7 (2013-2017) - which variants you checked it on",
+  "verified": false,
+  "source": "Where the values came from (your own before/after compare, a forum thread link, etc.)",
+  "hardware_required": "Parts that must be fitted first",
+  "modules": [
+    {
+      "module": "0x7E0",
+      "bus": "HS",
+      "label": "PCM - engine",
+      "changes": [
+        {
+          "did": "DE00",
+          "byte": 0,
+          "mask": "0x00",
+          "on": "0x00",
+          "off": "0x00"
+        }
+      ]
+    },
+    {
+      "module": "0x720",
+      "bus": "MS",
+      "label": "IPC - cluster",
+      "changes": [
+        {
+          "did": "DE01",
+          "byte": 0,
+          "mask": "0x00",
+          "on": "0x00",
+          "off": "0x00"
+        }
+      ]
+    }
+  ],
+  "hardware_checks": [
+    {
+      "type": "manual",
+      "label": "Something the user confirms by looking",
+      "help": "Where to look"
+    },
+    {
+      "type": "module_present",
+      "label": "A module that must exist",
+      "bus": "MS",
+      "module": "0x736"
+    },
+    {
+      "type": "did_value",
+      "label": "A status bit that proves the hardware is there",
+      "bus": "HS",
+      "module": "0x7E0",
+      "did": "DE00",
+      "byte": 0,
+      "mask": "0x00",
+      "value": "0x00"
+    }
+  ]
+}
