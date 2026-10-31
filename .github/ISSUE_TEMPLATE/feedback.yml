@@ -1,0 +1,39 @@
+name: Feedback or problem
+description: Tell us what worked, what didn't, or what you'd like to see in Hatchling
+title: "Feedback: "
+labels: ["feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying Hatchling - it's in beta, so every bit of feedback helps.
+        Please don't include your VIN or anything personal.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What's it about?
+      options: [Something didn't work, An idea or request, General feedback]
+    validations:
+      required: true
+  - type: input
+    id: car
+    attributes:
+      label: Your car
+      description: Model, year and engine, e.g. 2015 Fiesta 1.0 EcoBoost
+  - type: input
+    id: adapter
+    attributes:
+      label: Your adapter
+      description: e.g. switched ELM327 USB (HS/MS), vLinker FS
+  - type: textarea
+    id: details
+    attributes:
+      label: Tell us more
+      description: What you did, what you expected, what happened. Screenshots help - paste them straight in.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Hatchling version
+      description: Shown in the window title, e.g. 1.0.0
