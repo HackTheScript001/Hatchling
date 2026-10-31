@@ -1,6 +1,8 @@
 # Builds Hatchling.exe and the installer on Windows.
 #  - Every push / manual run: installer uploaded as a build artifact.
-#  - Pushing a tag like v1.0.1: also published as a GitHub release (the update checker reads these).
+#  - The first build of a new version (VERSION in core/version.py) is published as a GitHub
+#    release with its tag, e.g. v1.0.1 - the in-app update check reads these. To release an
+#    update: bump VERSION, update RELEASE_NOTES.md, push.
 name: Build Hatchling installer
 
 on:
@@ -56,10 +58,18 @@ jobs:
           name: Hatchling-Setup-${{ steps.ver.outputs.version }}
           path: dist/Hatchling-Setup-*.exe
 
-      - name: Publish release
-        if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/Hatchling-Setup-*.exe
-          name: Hatchling ${{ steps.ver.outputs.version }}
-          body_path: RELEASE_NOTES.md
+      - name: Publish release (first build of a new version)
+        if: github.event_name == 'push'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VER: ${{ steps.ver.outputs.version }}
+        run: |
+          gh release view "v$env:VER" --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) { Write-Host "Release v$env:VER already exists - nothing to publish."; exit 0 }
+          $exe = Get-ChildItem dist/Hatchling-Setup-*.exe | Select-Object -First 1
+          if (-not $exe) { Write-Error "Installer not found"; exit 1 }
+          gh release create "v$env:VER" $exe.FullName --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA `
+            --title "Hatchling $env:VER" --notes-file RELEASE_NOTES.md
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Write-Host "Published https://github.com/$env:GITHUB_REPOSITORY/releases/tag/v$env:VER"
