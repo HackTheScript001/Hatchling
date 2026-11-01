@@ -191,3 +191,52 @@ def _freeze(self) -> dict:
 
 
 GenericObd.freeze_frame = _freeze
+
+
+# ---- misfire counts per cylinder (mode 06 on CAN cars) ----------------------------------
+MISFIRE_MIDS = {0xA2 + i: i + 1 for i in range(12)}   # A2 = cylinder 1 ... AD = cylinder 12
+EWMA_TID, LAST_CYCLE_TID = 0x0B, 0x0C
+
+
+def parse_mode06(payload: bytes) -> list:
+    """CAN mode 06 reply (after 0x46): 9-byte records MID TID UASID value min max -> [(mid, tid, value, min, max)]."""
+    out = []
+    for i in range(0, len(payload) - 8, 9):
+        mid, tid, _unit = payload[i:i + 3]
+        val, lo, hi = (int.from_bytes(payload[i + j:i + j + 2], "big") for j in (3, 5, 7))
+        out.append((mid, tid, val, lo, hi))
+    return out
+
+
+def supported_mids(get06) -> set:
+    """get06(mid) -> reply bytes after 0x46 (the first byte is the MID asked for)."""
+    found = set()
+    for base in (0x00, 0x20, 0x40, 0x60, 0x80, 0xA0, 0xC0, 0xE0):
+        try:
+            r = get06(base)
+        except Exception:
+            break
+        if len(r) < 5 or r[0] != base:
+            break
+        bits = int.from_bytes(r[1:5], "big")
+        for n in range(32):
+            if bits & (1 << (31 - n)):
+                found.add(base + n + 1)
+        if not bits & 1:      # last bit says whether the next range exists
+            break
+    return found
+
+
+def misfire_counts(get06) -> list:
+    """[(cylinder, recent average, last drive)] from the engine computer's own misfire monitor.
+    'Recent average' is the engine's smoothed count over the last ten drives."""
+    mids = sorted(m for m in supported_mids(get06) if m in MISFIRE_MIDS)
+    out = []
+    for mid in mids:
+        try:
+            recs = parse_mode06(get06(mid))
+        except Exception:
+            continue
+        vals = {tid: v for m, tid, v, _, _ in recs if m == mid}
+        out.append((MISFIRE_MIDS[mid], vals.get(EWMA_TID), vals.get(LAST_CYCLE_TID)))
+    return out

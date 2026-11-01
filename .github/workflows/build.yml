@@ -2,13 +2,17 @@
 #  - Every push / manual run: installer uploaded as a build artifact.
 #  - The first build of a new version (VERSION in core/version.py) is published as a GitHub
 #    release with its tag, e.g. v1.0.1, plus a .sha256 checksum - the in-app updater downloads
-#    the installer, checks it against the checksum and installs it silently. To release an
+#    the installer, checks it against the checksum and installs it silently.
+#  - Before anything is built, tests/ clicks through every screen against the simulator. If anything
+#    crashes the build stops, so no release goes out with a broken screen.
+#  - Code signing: add the repository secrets SIGN_PFX (the .pfx certificate, base64) and
+#    SIGN_PFX_PASSWORD and the app and installer are signed. Without them the build is unsigned. To release an
 #    update: bump VERSION, update RELEASE_NOTES.md, push.
 name: Build Hatchling installer
 
 on:
   push:
-    branches: [main]
+    branches: [main, "ci/**"]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -18,6 +22,8 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      HAS_CERT: ${{ secrets.SIGN_PFX != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -27,6 +33,14 @@ jobs:
 
       - name: Install dependencies
         run: python -m pip install -r requirements.txt pyinstaller
+
+      - name: Core tests (simulator)
+        run: python tests/test_core.py
+
+      - name: Screen tests (every page against the simulator)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python tests/test_ui.py
 
       - name: Read version
         id: ver
@@ -47,6 +61,20 @@ jobs:
           --add-data "assets;assets" --add-data "features;features" --add-data "services;services"
           --add-data "livedata;livedata" --add-data "vehicles;vehicles" --add-data "library;library" --add-data "data;data" main.py
 
+      - name: Sign the app (when a certificate is set up)
+        if: env.HAS_CERT == 'true'
+        shell: pwsh
+        env:
+          SIGN_PFX: ${{ secrets.SIGN_PFX }}
+          SIGN_PFX_PASSWORD: ${{ secrets.SIGN_PFX_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "sign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGN_PFX))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Select-Object -Last 1
+          "SIGNTOOL=$($signtool.FullName)" >> $env:GITHUB_ENV
+          & $signtool.FullName sign /f $pfx /p $env:SIGN_PFX_PASSWORD /fd sha256 /tr http://timestamp.digicert.com /td sha256 dist\Hatchling\Hatchling.exe
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
 
@@ -54,13 +82,25 @@ jobs:
         run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DMyAppVersion=${{ steps.ver.outputs.version }} installer\hatchling.iss'
         shell: pwsh
 
+      - name: Sign the installer (when a certificate is set up)
+        if: env.HAS_CERT == 'true'
+        shell: pwsh
+        env:
+          SIGN_PFX_PASSWORD: ${{ secrets.SIGN_PFX_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "sign.pfx"
+          $exe = Get-ChildItem dist/Hatchling-Setup-*.exe | Select-Object -First 1
+          & $env:SIGNTOOL sign /f $pfx /p $env:SIGN_PFX_PASSWORD /fd sha256 /tr http://timestamp.digicert.com /td sha256 $exe.FullName
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Remove-Item $pfx
+
       - uses: actions/upload-artifact@v4
         with:
           name: Hatchling-Setup-${{ steps.ver.outputs.version }}
           path: dist/Hatchling-Setup-*.exe
 
       - name: Publish release (first build of a new version)
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
