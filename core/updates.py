@@ -76,7 +76,7 @@ def check(timeout: float = 6.0) -> Optional[Release]:
     exe = next((a for a in assets if a.get("name", "").lower().endswith(".exe")), None)
     page = data.get("html_url", "")
     if not exe:
-        return Release(tag.lstrip("v"), page, (data.get("body") or "").strip()[:600], page=page)
+        return Release(tag.lstrip("v"), page, (data.get("body") or "").strip()[:8000], page=page)
     sha = ""
     digest = str(exe.get("digest") or "")
     if digest.startswith("sha256:"):
@@ -90,8 +90,68 @@ def check(timeout: float = 6.0) -> Optional[Release]:
                     sha = r.read(500).decode("ascii", "ignore").split()[0].lower()
             except (OSError, IndexError):
                 sha = ""
-    return Release(tag.lstrip("v"), exe["browser_download_url"], (data.get("body") or "").strip()[:600],
+    return Release(tag.lstrip("v"), exe["browser_download_url"], (data.get("body") or "").strip()[:8000],
                    sha if re.fullmatch(r"[0-9a-f]{64}", sha) else "", int(exe.get("size") or 0), page)
+
+
+# ---- release notes for the update window --------------------------------------------
+_BOILERPLATE = ("download `hatchling-setup", "use at your own risk", "feedback welcome", "the source code is attached",
+                "beta testing release")
+
+
+_HEADING = re.compile(r"^(?:what's new in|what was new in|new in)\s+v?(\d+(?:\.\d+)*)", re.I)
+
+
+def whats_new(notes: str, version: str, since: str = VERSION) -> str:
+    """The release notes for every version after `since` up to `version`, newest first - without the
+    download instructions. Falls back to the notes minus boilerplate if they have no version headings."""
+    lines = (notes or "").replace("\r\n", "\n").split("\n")
+    sections, cur = [], None
+    for l in lines:
+        m = _HEADING.match(l.strip())
+        if m:
+            cur = [m.group(1), []]
+            sections.append(cur)
+        elif cur is not None:
+            if l.strip().lower().startswith("how to install") or any(b in l.lower() for b in _BOILERPLATE):
+                cur = None
+                continue
+            cur[1].append(l)
+    wanted = [(v, "\n".join(body).strip()) for v, body in sections
+              if parse_version(since) < parse_version(v) <= parse_version(version)]
+    wanted = [(v, b) for v, b in wanted if b]
+    if wanted:
+        if len(wanted) == 1:
+            return wanted[0][1]
+        return "\n\n".join(f"Version {v}\n{b}" for v, b in wanted)
+    keep = [l for l in lines if not any(b in l.lower() for b in _BOILERPLATE)]
+    return "\n".join(keep).strip()
+
+
+def notes_html(text: str) -> str:
+    """The little Markdown the release notes use (bold, bullets, paragraphs) as HTML."""
+    import html as _html
+    out, in_list = [], False
+    for raw in text.split("\n"):
+        l = raw.strip()
+        body = _html.escape(l[2:] if l.startswith(("- ", "* ")) else l)
+        body = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", body)
+        body = re.sub(r"`(.+?)`", r"\1", body)
+        if l.startswith(("- ", "* ")):
+            if not in_list:
+                out.append("<ul style='margin:2px 0 6px -20px'>")
+                in_list = True
+            out.append(f"<li>{body}</li>")
+            continue
+        if in_list:
+            out.append("</ul>")
+            in_list = False
+        if l:
+            out.append(f"<p style='margin:6px 0 2px'><b>{body}</b></p>" if not l.endswith(".") and len(l) < 40
+                       else f"<p style='margin:4px 0'>{body}</p>")
+    if in_list:
+        out.append("</ul>")
+    return "".join(out)
 
 
 # ---- downloading and installing in the app ------------------------------------------
