@@ -532,6 +532,8 @@ class ConnectPage(Page):
         for p in s.profiles:
             self.vehicle.addItem(p.name, p.id)
         self.vehicle.currentIndexChanged.connect(self.vehicle_changed)
+        self.vehicle.activated.connect(lambda _: setattr(self, "user_picked", self.vehicle.currentData() is not None))
+        self.user_picked = False   # True when the owner chose a profile by hand (kept for the next car)
         refresh = button("Refresh")
         refresh.clicked.connect(self.refresh)
         grid.addWidget(QLabel("Port"), 0, 0)
@@ -615,6 +617,12 @@ class ConnectPage(Page):
             self.btn.setText("Connect")
             self.info.setText("Disconnected")
             self.s.log("Disconnected")
+            if not self.user_picked:   # the profile was picked from this car's VIN - the next car may differ
+                self.vehicle.blockSignals(True)
+                self.vehicle.setCurrentIndex(0)
+                self.vehicle.blockSignals(False)
+                self.vehicle_changed()
+                self.s.profile = None
             return
         port = self.port.currentData() or self.port.currentText()
         if port == WIFI:
@@ -1244,7 +1252,10 @@ class DtcPage(Page):
             self.s.record(history.NOTE, "MOT check: " + ("looks ready" if r["ready"] else
                                                         f"not ready ({', '.join(r['incomplete']) or 'warning light on'})"),
                           {"incomplete": r["incomplete"], "mil": r["mil"]})
-        self.s.ensure_bus(bus, lambda: self.s.runner.run(lambda: obd_readiness(get), ok))
+        def err(e):
+            QMessageBox.information(self, "MOT check", f"The engine computer didn't give its self-test results "
+                                                       f"({e}). Check the ignition is on and try again.")
+        self.s.ensure_bus(bus, lambda: self.s.runner.run(lambda: obd_readiness(get), ok, err))
 
     def clear_all(self):
         if not self.need_connection() or not self.s.modules:
