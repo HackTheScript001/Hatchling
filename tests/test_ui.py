@@ -333,6 +333,56 @@ for key in list(w.pages):
 cp.toggle()
 pump(0.3)
 
+step("a Mazda")
+cp.port.setCurrentIndex(cp.port.findData(A.SIM_MAZDA))
+cp.toggle()
+wait(lambda: s.connected, 20, "connect to the Mazda")
+idle()
+mp.scan(False)
+idle(60)
+names = {m.name for m in s.modules.values()}
+if "SAS - Airbags" not in names:
+    problems.append(f"[mazda] Mazda module names not used: {sorted(names)}")
+if s.any_car or w.nav.item(w.rows["Features"]).isHidden():
+    problems.append("[mazda] Mazda was treated as 'any car'")
+if mp.get_btn.isVisible():
+    problems.append("[mazda] 'Get my factory file' shown for a Mazda")
+dp.read_all()
+idle(60)
+w.go("Features")
+pump(0.2)
+cp.toggle()
+pump(0.3)
+
+step("any car mode (a Vauxhall)")
+cp.port.setCurrentIndex(cp.port.findData(A.SIM_ANY))
+cp.toggle()
+wait(lambda: s.connected, 20, "connect to the Vauxhall")
+idle()
+if not s.any_car:
+    problems.append("[any car] the Vauxhall didn't switch on any car mode")
+if not all(w.nav.item(w.rows[k]).isHidden() for k in A.FORD_ONLY_PAGES):
+    problems.append("[any car] Ford-only pages still in the sidebar")
+mp.scan(False)
+idle(60)
+dp.read_all()
+idle(60)
+if "P0300" not in dp.table_codes():
+    problems.append(f"[any car] engine code not read: {dp.table_codes()}")
+before = opened.count("MisfireDialog")
+dp.misfire_check()
+idle()
+dp.mot_check()
+idle()
+for key in list(w.pages):
+    if not w.nav.item(w.rows[key]).isHidden():
+        w.go(key)
+        pump(0.05)
+w.go("Home")
+pump(0.1)
+cp.toggle()
+pump(0.3)
+
 step("close")
 w.close()
 pump(0.3)

@@ -157,8 +157,10 @@ class SimKwpEcu(SimEcu):
         return super().handle(req)
 
 
-def build_car() -> Dict[str, Dict[int, SimEcu]]:
-    vin = "WF0DXXGAKDFA12345"
+VINS = {"ford": "WF0DXXGAKDFA12345", "mazda": "JMZBL14Z201234567", "other": "W0L0XEP68G4012345"}
+
+
+def build_car(vin: str = VINS["ford"]) -> Dict[str, Dict[int, SimEcu]]:
     bcm = SimEcu(0x726, "C1BT-14A073-AE", "C1BT-14C184-AH",
                  {0xDE00: bytes.fromhex("2A8040A6"), 0xDE01: bytes.fromhex("0C0A0000E1"),
                   0xDE02: bytes.fromhex("8100100000500000"), 0xDE03: bytes.fromhex("0300")},
@@ -202,11 +204,21 @@ def build_car() -> Dict[str, Dict[int, SimEcu]]:
 class SimTransport:
     """legacy=True pretends to be a 1990s/2000s Ford on J1850 PWM: generic OBD-II only."""
 
-    def __init__(self, legacy: bool = False):
+    def __init__(self, legacy: bool = False, kind: str = "ford"):
+        """kind: 'ford' (2015 Fiesta), 'mazda' (2012 Mazda3, same layout) or 'other' (a 2016 Vauxhall that
+        only answers generic OBD-II, like most non-Ford cars do for Hatchling)."""
         self.legacy = legacy
-        self.car = {} if legacy else build_car()
-        self.pcm = SimPcm(0x7E0, "XS4F-12A650-AB", "-", {}, [(_dtc("P0171"), 0x08), (_dtc("P0420"), 0x08)],
-                          "1FAFP34P63W123456") if legacy else (self.car[HS][0x7E0])
+        self.kind = kind
+        if legacy:
+            self.car = {}
+            self.pcm = SimPcm(0x7E0, "XS4F-12A650-AB", "-", {}, [(_dtc("P0171"), 0x08), (_dtc("P0420"), 0x08)],
+                              "1FAFP34P63W123456")
+        elif kind == "other":
+            self.car = {}
+            self.pcm = SimPcm(0x7E0, "55488591", "-", {}, [(_dtc("P0300"), 0x08)], VINS["other"])
+        else:
+            self.car = build_car(VINS.get(kind, VINS["ford"]))
+            self.pcm = self.car[HS][0x7E0]
         self.bus = HS
         self.divisor = 4
         self.headers = True
@@ -243,6 +255,18 @@ class SimTransport:
         if mode == 0x01:
             r = pcm.handle(data) if data[1] != 0x00 else bytes([0x41, 0x00, 0xBE, 0x3E, 0xB8, 0x11])
             return [self._hex(r)] if r[0] == 0x41 else ["NO DATA"]
+        if mode == 0x06 and len(data) >= 2 and not self.legacy:
+            r = pcm.handle(bytes(data[:2]))
+            if r[0] != 0x46:
+                return ["NO DATA"]
+            if len(r) <= 7:
+                return [self._hex(r)]
+            lines = [f"{len(r):03X}", "0: " + self._hex(r[:6])]
+            rest, n = r[6:], 1
+            while rest:
+                lines.append(f"{n:X}: " + self._hex(rest[:7]))
+                rest, n = rest[7:], n + 1
+            return lines
         if mode == 0x02 and len(data) >= 3:
             if data[1] == 0x02:
                 raw = pcm.dtcs[0][0][:2] if pcm.dtcs else b"\0\0"

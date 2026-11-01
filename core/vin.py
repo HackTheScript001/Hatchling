@@ -22,6 +22,32 @@ WMI = {
     "4F2": ("Mazda", "USA"), "4F4": ("Mazda", "USA"), "3MZ": ("Mazda", "Mexico"), "3MV": ("Mazda", "Mexico"),
 }
 
+FORD_FAMILY = ("Ford", "Lincoln", "Mercury", "Mazda")
+FORD_FACTORY_MAKES = ("Ford", "Lincoln", "Mercury")   # makes Ford's As-Built lookup covers
+
+# Other makers, so any car gets a proper name (Hatchling's generic tools work on all of them).
+OTHER_WMI = {
+    "W0L": ("Vauxhall/Opel", "Germany"), "W0V": ("Vauxhall/Opel", "Germany"), "SED": ("Vauxhall/Opel", "UK"),
+    "VXK": ("Vauxhall/Opel", "France"), "VX1": ("Vauxhall/Opel", "France"),
+    "WVW": ("Volkswagen", "Germany"), "WVG": ("Volkswagen", "Germany"), "WV1": ("Volkswagen", "Germany"),
+    "WV2": ("Volkswagen", "Germany"), "3VW": ("Volkswagen", "Mexico"), "WAU": ("Audi", "Germany"),
+    "WUA": ("Audi", "Germany"), "TRU": ("Audi", "Hungary"), "TMB": ("Skoda", "Czech Republic"),
+    "VSS": ("SEAT/Cupra", "Spain"), "WBA": ("BMW", "Germany"), "WBS": ("BMW", "Germany"), "WMW": ("MINI", "UK"),
+    "WDD": ("Mercedes-Benz", "Germany"), "WDB": ("Mercedes-Benz", "Germany"), "W1K": ("Mercedes-Benz", "Germany"),
+    "W1N": ("Mercedes-Benz", "Germany"), "WP0": ("Porsche", "Germany"), "VF1": ("Renault", "France"),
+    "VF3": ("Peugeot", "France"), "VF7": ("Citroen", "France"), "UU1": ("Dacia", "Romania"),
+    "ZFA": ("Fiat", "Italy"), "ZAR": ("Alfa Romeo", "Italy"), "YV1": ("Volvo", "Sweden"),
+    "SAL": ("Land Rover", "UK"), "SAJ": ("Jaguar", "UK"), "SB1": ("Toyota", "UK"), "JTD": ("Toyota", "Japan"),
+    "JTE": ("Toyota", "Japan"), "JT2": ("Toyota", "Japan"), "VNK": ("Toyota", "France"), "NMT": ("Toyota", "Turkey"),
+    "SJN": ("Nissan", "UK"), "JN1": ("Nissan", "Japan"), "VSK": ("Nissan", "Spain"), "SHH": ("Honda", "UK"),
+    "SHS": ("Honda", "UK"), "JHM": ("Honda", "Japan"), "KNA": ("Kia", "Korea"), "U5Y": ("Kia", "Slovakia"),
+    "KMH": ("Hyundai", "Korea"), "TMA": ("Hyundai", "Czech Republic"), "NLH": ("Hyundai", "Turkey"),
+    "JS2": ("Suzuki", "Japan"), "TSM": ("Suzuki", "Hungary"), "JMB": ("Mitsubishi", "Japan"),
+    "JF1": ("Subaru", "Japan"), "LRW": ("Tesla", "China"), "5YJ": ("Tesla", "USA"), "XP7": ("Tesla", "Germany"),
+    "1G1": ("Chevrolet", "USA"), "1GC": ("Chevrolet", "USA"), "KL1": ("Chevrolet", "Korea"),
+    "1C4": ("Jeep/Chrysler", "USA"), "1J4": ("Jeep", "USA"), "LSJ": ("MG", "China"), "SDB": ("MG", "UK"),
+}
+
 YEAR_CODES = "ABCDEFGHJKLMNPRSTVWXY123456789"  # 1980..2009, then repeats from 2010
 
 _TRANSLIT = {**{str(d): d for d in range(10)},
@@ -37,6 +63,15 @@ class VinInfo:
     country: str
     year: Optional[int]
     check_digit_ok: Optional[bool]   # None where the check digit isn't required (most non-NA VINs)
+
+    @property
+    def ford_family(self) -> bool:
+        return self.make in FORD_FAMILY
+
+    @property
+    def ford_factory(self) -> bool:
+        """Ford publishes this car's factory As-Built settings by VIN."""
+        return self.make in FORD_FACTORY_MAKES
 
     @property
     def summary(self) -> str:
@@ -80,7 +115,8 @@ def decode(vin: str) -> Optional[VinInfo]:
         return None
     make, country = WMI.get(vin[:3], (None, None))
     if make is None:
-        return VinInfo(vin, "Unknown make", vin[:3], model_year(vin) if vin[0] in "12345" else None, None)
+        make, country = OTHER_WMI.get(vin[:3], ("Unknown make", vin[:3]))
+        return VinInfo(vin, make, country, model_year(vin) if vin[0] in "12345" else None, None)
     na = vin[0] in "12345"
     # Only North American VINs are required to carry the model year in position 10.
     return VinInfo(vin, make, country, model_year(vin) if na else None, check_digit_ok(vin) if na else None)

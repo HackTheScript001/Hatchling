@@ -8,7 +8,7 @@ You heard of Forscan now welcome to Hatchling
 
 Your own Ford HS/MS-CAN diagnostic and configuration tool for a switched ELM327 USB adapter.
 Built for the Fiesta Mk7, with vehicle profiles for Ford, Lincoln, Mercury and Mazda from
-1996 onwards, plus generic OBD-II for any other make.
+1996 onwards, plus "any car mode" (standard OBD-II: fault codes, live data, MOT check, misfires, trips) for every other make.
 
 ## What it does
 

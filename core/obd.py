@@ -240,3 +240,16 @@ def misfire_counts(get06) -> list:
         vals = {tid: v for m, tid, v, _, _ in recs if m == mid}
         out.append((MISFIRE_MIDS[mid], vals.get(EWMA_TID), vals.get(LAST_CYCLE_TID)))
     return out
+
+
+def _mode06(self, mid: int) -> bytes:
+    """Generic mode 06 (CAN cars only): the reply after 0x46 from the first ECU that answers."""
+    if not self.is_can:
+        raise ElmError("Misfire counts need a CAN car (about 2008 on)")
+    for p in _payload(self.elm.obd(f"06{mid:02X}", timeout=3.0), 0x46, True):
+        if p and p[0] == mid:
+            return bytes(p)
+    raise ElmError(f"Test {mid:02X} not supported")
+
+
+GenericObd.mode06 = _mode06
