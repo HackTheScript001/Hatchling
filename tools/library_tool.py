@@ -121,6 +121,12 @@ def validate_feature(d: Any) -> dict:
                 if not PART_RE.match(v):
                     raise Invalid(f"module {i + 1}: {key} number looks wrong")
                 entry[key] = v
+        sizes = m.get("blocks") or {}
+        if not isinstance(sizes, dict) or len(sizes) > 32:
+            raise Invalid(f"module {i + 1}: blocks must be an object of up to 32 sizes")
+        if sizes:
+            entry["blocks"] = {_did(k, f"module {i + 1} block"): _int(v, 1, 255, f"module {i + 1} block size")
+                               for k, v in sizes.items()}
         changes = m.get("changes")
         if not isinstance(changes, list) or not 1 <= len(changes) <= 32:
             raise Invalid(f"module {i + 1}: needs 1-32 changes")

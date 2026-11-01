@@ -60,10 +60,13 @@ def slug(name: str) -> str:
 
 
 def _module_entry(bus: str, module: int, label: str, changes: List[ByteChange],
-                  identity: Optional[dict] = None) -> dict:
+                  identity: Optional[dict] = None, sizes: Optional[Dict[int, int]] = None) -> dict:
     entry = {"module": f"0x{module:03X}", "bus": bus, "label": label,
              "changes": [{"did": f"{c.did:04X}", "byte": c.byte, "mask": f"0x{c.mask:02X}",
                           "on": f"0x{c.after & c.mask:02X}", "off": f"0x{c.before & c.mask:02X}"} for c in changes]}
+    if sizes:   # block lengths on this car - other cars must match before the values are written
+        used = sorted({c.did for c in changes})
+        entry["blocks"] = {f"{d:04X}": int(sizes[d]) for d in used if d in sizes}
     if identity:
         if identity.get("Part number"):
             entry["part"] = identity["Part number"]
@@ -75,13 +78,13 @@ def _module_entry(bus: str, module: int, label: str, changes: List[ByteChange],
 def make_feature(name: str, bus: str, module: int, module_label: str, changes: List[ByteChange],
                  description: str = "", category: str = "Custom", hardware: str = "",
                  vehicle: str = "", source: str = "Found with Hatchling's feature finder",
-                 identity: Optional[dict] = None, learned_on: str = "") -> dict:
+                 identity: Optional[dict] = None, learned_on: str = "", sizes: Optional[Dict[int, int]] = None) -> dict:
     """Feature definition where 'on' is the after-state and 'off' the before-state, masked to changed bits."""
     return {
         "id": slug(name), "name": name, "category": category, "description": description,
         "vehicle": vehicle, "learned_on": learned_on or vehicle, "verified": False, "source": source,
         "hardware_required": hardware, "hardware_checks": [],
-        "modules": [_module_entry(bus, module, module_label, changes, identity)],
+        "modules": [_module_entry(bus, module, module_label, changes, identity, sizes)],
     }
 
 
@@ -98,11 +101,11 @@ def save_feature(feature: dict, folder: Optional[str] = None) -> str:
 
 
 def merge_into(path: str, bus: str, module: int, module_label: str, changes: List[ByteChange],
-               identity: Optional[dict] = None):
+               identity: Optional[dict] = None, sizes: Optional[Dict[int, int]] = None):
     """Adds another module's changes to an existing feature file (features often span modules)."""
     with open(path, encoding="utf-8") as f:
         d = json.load(f)
-    part = _module_entry(bus, module, module_label, changes, identity)
+    part = _module_entry(bus, module, module_label, changes, identity, sizes)
     d.setdefault("modules", [])
     d["modules"] = [m for m in d["modules"] if not (m.get("bus") == bus and int(m["module"], 0) == module)]
     d["modules"].append(part)

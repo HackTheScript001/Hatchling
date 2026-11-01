@@ -1,3 +1,9 @@
+What's new in 1.7.0
+- Simpler Features page: each feature has one switch. Flip it and Hatchling does the rest - checks the parts are fitted, checks the battery, backs up, writes, and checks it took. The technical details are still there behind "Show the details".
+- Will this work on my car? Before anything is written, Hatchling compares the feature with your car: the same module part numbers, the same settings layout, and that your car's current setting is one the feature knows. You get a clear answer: Proven on your modules, Very likely, Untested on your modules (only written if you tick that you accept the risk), or Won't work on your car (never written).
+- Create features from my car: a guided way to turn everything that's been changed on your car since the factory into named features - tick the changes that belong together, call it "Cruise control", repeat. Then check each one works, mark it as working and share it.
+- New features remember how your modules' settings are laid out, so other owners' cars are checked against it.
+
 What's new in 1.6.2
 - Module settings now sits right under Modules in the sidebar.
 
@@ -69,7 +75,7 @@ Adapters and fixes
 
 How to install
 Hatchling updates itself: click Update in the bottom bar.
-Windows: download Hatchling-Setup-1.6.2.exe below and run it.
+Windows: download Hatchling-Setup-1.7.0.exe below and run it.
 Linux / Raspberry Pi OS (64-bit): open a terminal and run
 curl -fsSL https://raw.githubusercontent.com/HackTheScript001/Hatchling/main/install-linux.sh | bash
 
