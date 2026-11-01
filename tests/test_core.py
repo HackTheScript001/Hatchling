@@ -129,6 +129,11 @@ try:
 except updates.UpdateError:
     check("bad checksum rejected", True)
 
+notes = "Intro\n\nWhat's new in 2.1\n- **B** thing\n\nWhat's new in 2.0\n- A thing\n\nHow to install\nDownload `Hatchling-Setup-2.1.exe`"
+wn = updates.whats_new(notes, "2.1", "1.9")
+check("update notes: every newer version, no install text", "Version 2.1" in wn and "A thing" in wn and
+      "Download" not in wn and "Intro" not in wn)
+check("update notes: formatted", "<b>B</b>" in updates.notes_html(wn) and "**" not in updates.notes_html(wn))
 check("wish list loads", len(library.wishlist()) >= 5)
 
 from core import vin as vinmod  # noqa: E402

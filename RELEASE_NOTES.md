@@ -1,6 +1,5 @@
-Beta testing release - thanks for trying Hatchling.
-
-**Download `Hatchling-Setup-1.5.0.exe` below** and run it (it updates your current version in place). Windows may show "Windows protected your PC" because the installer isn't code-signed yet - click **More info**, then **Run anyway**. From 1.3.0 on, Hatchling updates itself.
+What's new in 1.5.1
+- The update window now shows just what's new in the version you're getting, neatly formatted, instead of the raw release text cut off part way.
 
 What's new in 1.5.0
 
@@ -53,6 +52,9 @@ Adapters and fixes
 - Modules shows a module on both buses once (e.g. the body module "HS + MS").
 - If you have a factory file for a different VIN, Modules says which car it belongs to.
 - The Simulator has its own factory file, so you can try **Changes since factory** without a car.
+
+How to install
+Hatchling updates itself: click Update in the bottom bar. For a fresh install, download Hatchling-Setup-1.5.1.exe below and run it. Windows may show "Windows protected your PC" because the installer isn't code-signed yet - click More info, then Run anyway.
 
 **Use at your own risk.** Hatchling writes to your car's modules. Keep a battery charger connected when making changes, and import your factory file before changing anything.
 
