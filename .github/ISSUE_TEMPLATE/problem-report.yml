@@ -1,0 +1,38 @@
+name: Problem report
+description: Something went wrong in Hatchling - sent from the app with the activity log (VIN removed)
+title: "Problem: "
+labels: ["bug", "feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Hatchling filled this in. Your VIN, Windows user name and email addresses have been removed from the log.
+        If the log box is empty, it's on your clipboard - click in the box and press Ctrl+V.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What were you doing, and what did you expect?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Hatchling version
+  - type: input
+    id: windows
+    attributes:
+      label: Windows
+  - type: input
+    id: adapter
+    attributes:
+      label: Adapter
+  - type: input
+    id: car
+    attributes:
+      label: Car
+  - type: textarea
+    id: log
+    attributes:
+      label: Activity log
+      render: text

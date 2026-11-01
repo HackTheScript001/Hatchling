@@ -102,7 +102,20 @@ class SimEcu:
 
 
 class SimPcm(SimEcu):
+    MISFIRES = {1: (0, 0), 2: (1, 0), 3: (14, 22), 4: (0, 1)}   # cylinder: (recent average, last drive)
+
     def handle(self, req: bytes) -> bytes:
+        if req[0] == 0x06 and len(req) > 1:
+            mid = req[1]
+            bitmaps = {0x00: 0x00000001, 0x20: 0x00000001, 0x40: 0x00000001, 0x60: 0x00000001,
+                       0x80: 0x00000001, 0xA0: 0x78000000}   # A2-A5 = cylinders 1-4
+            if mid in bitmaps:
+                return bytes([0x46, mid]) + bitmaps[mid].to_bytes(4, "big")
+            if 0xA2 <= mid <= 0xA5:
+                ewma, last = self.MISFIRES[mid - 0xA1]
+                rec = lambda tid, v: bytes([mid, tid, 0x24]) + v.to_bytes(2, "big") + b"\0\0" + (0xFFFF).to_bytes(2, "big")
+                return bytes([0x46]) + rec(0x0B, ewma) + rec(0x0C, last)
+            return bytes([0x7F, 0x06, 0x12])
         if req[0] == 0x01:
             t = time.monotonic()
             rpm = 850 + 600 * (1 + math.sin(t / 2))

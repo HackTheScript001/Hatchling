@@ -127,6 +127,10 @@ class UDS:
         key = self.security_hook(tx, level, seed)
         self._req(tx, [0x27, level + 1, *key])
 
+    def mode06(self, mid: int, tx: int = 0x7E0) -> bytes:
+        """OBD-II mode 06 (on-board test results) - the reply after 0x46."""
+        return self._req(tx, [0x06, mid], timeout=2.0)[1:]
+
     def obd_pid(self, pid: int, tx: int = 0x7E0) -> bytes:
         """OBD-II mode 01 request to the PCM."""
         r = self._req(tx, [0x01, pid], timeout=1.0)
