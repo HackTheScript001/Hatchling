@@ -42,6 +42,7 @@ class Part:
     changes: List[Change] = field(default_factory=list)
     part_number: str = ""   # module the values were learned on (for compatibility checks)
     software: str = ""
+    block_sizes: Dict[int, int] = field(default_factory=dict)   # block -> length on the car it was learned on
 
     @property
     def key(self) -> ModKey:
@@ -108,8 +109,14 @@ def _parse(d: dict, fallback_id: str) -> Feature:
         for m in d["modules"]:
             bus, addr = m.get("bus", "MS").upper(), _int(m["module"])
             label = m.get("label") or name_for(bus, addr)
+            sizes = {}
+            for k, v in (m.get("blocks") or {}).items():
+                try:
+                    sizes[int(k, 16)] = int(v)
+                except (TypeError, ValueError):
+                    pass
             parts.append(Part(bus, addr, label, [_change(c) for c in m.get("changes", [])],
-                              m.get("part", ""), m.get("software", "")))
+                              m.get("part", ""), m.get("software", ""), sizes))
     else:  # older flat "changes" format - group by module
         by: Dict[ModKey, Part] = {}
         for c in d.get("changes", []):
@@ -296,3 +303,101 @@ def compatibility_level(results: List[Tuple[Part, str, str]]) -> str:
         if level in states:
             return level
     return SAME
+
+
+# ---- "Will this work on my car?" - checked before every write ------------------------------
+PROVEN, LIKELY, UNTESTED, WONT = "proven", "likely", "untested", "won't work"
+VERDICT_TEXT = {
+    PROVEN: "Proven on your modules",
+    LIKELY: "Very likely to work",
+    UNTESTED: "Untested on your modules",
+    WONT: "Won't work on your car",
+}
+
+
+@dataclass
+class Verdict:
+    level: str
+    reasons: List[str]
+
+    @property
+    def headline(self) -> str:
+        return VERDICT_TEXT[self.level]
+
+    @property
+    def blocked(self) -> bool:
+        """WONT always stops a write; UNTESTED needs the owner to accept the risk."""
+        return self.level == WONT
+
+
+def write_verdict(f: Feature, scanned: Dict[ModKey, dict], blocks: Optional[Dict[ModKey, Blocks]] = None,
+                  parts: Optional[List[Part]] = None, confirmations_by_family: Optional[Dict[str, int]] = None
+                  ) -> Verdict:
+    """Whether a feature's values are safe to write to *this* car.
+
+    - every module it needs must be on the car
+    - the settings blocks must be laid out the same (same length as where it was learned) - else it won't work
+    - each setting must currently be one of the feature's own values (its 'on' or 'off') - anything else means
+      the bits mean something different on this car
+    - part numbers: same module -> likely (proven once verified or confirmed by other owners);
+      same family -> likely; different or unknown -> untested
+    blocks: what the car's modules hold now (read just before writing)."""
+    parts = parts if parts is not None else f.parts
+    blocks = blocks or {}
+    reasons: List[str] = []
+    wont = False
+    for p in parts:
+        if p.key not in scanned:
+            wont = True
+            reasons.append(f"{p.label}: this module isn't on your car")
+            continue
+        cur = blocks.get(p.key)
+        if cur is None:
+            continue
+        for c in p.changes:
+            data = cur.get(c.did)
+            if data is None:
+                wont = True
+                reasons.append(f"{p.label}: the module doesn't have settings block {c.did:04X}")
+                continue
+            want = p.block_sizes.get(c.did)
+            if want and len(data) != want:
+                wont = True
+                reasons.append(f"{p.label}: its settings are laid out differently ({len(data)} bytes in block "
+                               f"{c.did:04X}, the car it was learned on has {want})")
+                continue
+            if c.byte >= len(data):
+                wont = True
+                reasons.append(f"{p.label}: block {c.did:04X} is too short for this setting")
+                continue
+            now = data[c.byte] & c.mask
+            if now not in (c.on & c.mask, c.off & c.mask):
+                wont = True
+                reasons.append(f"{p.label}: the setting is currently {now:02X}, which is neither this feature's "
+                               f"'on' ({c.on & c.mask:02X}) nor 'off' ({c.off & c.mask:02X}) - it means something "
+                               "else on your car")
+    if wont:
+        return Verdict(WONT, reasons)
+    res = compatibility(Feature(f.id, f.name, f.category, f.description, f.vehicle, f.verified, f.source,
+                                f.hardware_required, parts), scanned)
+    level = compatibility_level(res)
+    confirms = 0
+    for p, st, _ in res:
+        mine = (scanned.get(p.key) or {}).get("Part number", "")
+        if mine and confirmations_by_family:
+            confirms += confirmations_by_family.get(part_family(mine), 0)
+    for p, st, detail in res:
+        if st == DIFFERENT:
+            reasons.append(f"{p.label}: your module is {detail}")
+        elif st == UNKNOWN_PART:
+            reasons.append(f"{p.label}: {detail}")
+    if level in (DIFFERENT, UNKNOWN_PART):
+        return Verdict(UNTESTED, reasons or ["No part numbers to compare with the car it was learned on"])
+    if level == SAME and (f.verified or confirms):
+        why = "Your modules are the same parts it was learned on"
+        why += f", and {confirms} other owner(s) with them say it works." if confirms else " and it's been tested."
+        return Verdict(PROVEN, [why])
+    if level == SAME:
+        return Verdict(LIKELY, ["Your modules are the same parts it was learned on - not marked as tested yet."])
+    return Verdict(LIKELY, ["Same type of module, a different version from the car it was learned on."]
+                   + [f"{p.label}: {d}" for p, st, d in res if st == FAMILY])

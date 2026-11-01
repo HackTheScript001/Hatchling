@@ -128,8 +128,10 @@ class Session(QObject):
         self.go: Callable[[str], None] = lambda key: None              # set by MainWindow
         self.open_learn: Callable[..., None] = lambda name="": None    # set by MainWindow
         self.open_factory_diff: Callable[[], None] = lambda: None      # set by MainWindow
+        self.open_create_features: Callable[[], None] = lambda: None   # set by MainWindow
         self.full_backup_done: set = set()   # VINs backed up in full during this visit
         self.feature_states: dict = {}       # from the last module scan
+        self.block_cache: Dict[Tuple[str, int], asbuilt.Blocks] = {}   # last settings read from each module
         self.features_detected.connect(lambda d: setattr(self, "feature_states", d.get("states", {})))
         try:
             self.history: Optional[history.History] = history.History()
@@ -294,6 +296,15 @@ class Session(QObject):
         if key not in self.modules:
             self.modules[key] = Module(addr, bus, modules.name_for(bus, addr, self.make))
         return self.modules[key]
+
+
+def read_blocks(uds, m: Module, progress=None) -> asbuilt.Blocks:
+    """Reads a module's settings and remembers their sizes, so features learned from them can record the
+    layout (other cars must match it before the values are written)."""
+    blocks = asbuilt.read_blocks(uds, m, progress)
+    if Session.instance is not None:
+        Session.instance.block_cache[(m.bus, m.addr)] = dict(blocks)
+    return blocks
 
 
 # ---------------------------------------------------------------- helpers
@@ -880,7 +891,7 @@ class ModulesPage(Page):
                 for m in found:
                     if (bus, m.addr) in needed:
                         try:
-                            blocks[(bus, m.addr)] = asbuilt.read_blocks(self.s.uds, m)
+                            blocks[(bus, m.addr)] = read_blocks(self.s.uds, m)
                         except (UdsError, ElmError) as e:
                             self.s.log(f"{m.name}: couldn't read configuration for features - {e}")
                 return found, blocks
@@ -1038,8 +1049,9 @@ class ModulesPage(Page):
                  "donor as close to your car as possible (same year, engine, trim) gives the shortest list."
                  + (f" Modules only on the donor, not shown: {', '.join(skipped)}." if skipped else "")).exec()
 
-    def changes_since_factory(self):
-        """Reads every scanned module the factory file covers and lists what's changed since the factory."""
+    def changes_since_factory(self, then: Optional[Callable[[list], None]] = None):
+        """Reads every scanned module the factory file covers and lists what's changed since the factory.
+        With `then`, hands the changes [(module, [ByteChange])] to it instead of showing them."""
         if not self.need_connection() or not self.s.factory:
             return
         if not self.s.modules:
@@ -1062,7 +1074,7 @@ class ModulesPage(Page):
                 out = []
                 for m in mods:
                     try:
-                        car = asbuilt.read_blocks(self.s.uds, m)
+                        car = read_blocks(self.s.uds, m)
                     except (UdsError, ElmError) as e:
                         self.s.log(f"{m.name}: couldn't read - {e}")
                         continue
@@ -1075,6 +1087,9 @@ class ModulesPage(Page):
             changed = [(m, ch) for m, ch in groups if ch]
             self.s.log(f"Changes since factory: {sum(len(ch) for _, ch in changed)} byte(s) in "
                        f"{len(changed)} of {len(groups)} module(s)")
+            if then:
+                then(changed)
+                return
             if not changed:
                 QMessageBox.information(self, "Changes since factory",
                                         f"All {len(groups)} module(s) still match the factory settings.")
@@ -1885,10 +1900,17 @@ class FeatureFinderDialog(QDialog):
     groups: [(module, [ByteChange])] where 'before' is treated as off and 'after' as on,
     unless the user ticks that their car already has the feature (then it's flipped)."""
 
+    def sizes(self, m: Module) -> Dict[int, int]:
+        return {d: len(b) for d, b in self.s.block_cache.get((m.bus, m.addr), {}).items()}
+
     def __init__(self, parent, s: Session, groups, title: str = "", before_label: str = "Before",
-                 after_label: str = "After", offer_flip: bool = True, hint: str = "", name: str = ""):
+                 after_label: str = "After", offer_flip: bool = True, hint: str = "", name: str = "",
+                 start_unchecked: bool = False, quiet: bool = False):
         super().__init__(parent)
         self.s = s
+        self.quiet = quiet
+        self.saved_rows: set = set()
+        self.saved_name, self.saved_path = "", ""
         self.rows = [(m, c) for m, changes in groups for c in changes]
         self.setWindowTitle("Feature finder")
         self.setMinimumSize(680, 560)
@@ -1916,7 +1938,7 @@ class FeatureFinderDialog(QDialog):
         self.checks = []
         for r, (m, c) in enumerate(self.rows):
             cb = QCheckBox()
-            cb.setChecked(True)
+            cb.setChecked(not start_unchecked)
             self.checks.append(cb)
             self.tbl.setCellWidget(r, 0, cb)
             self.tbl.setItem(r, 1, item(f"{m.name} ({m.addr:03X})"))
@@ -1987,18 +2009,25 @@ class FeatureFinderDialog(QDialog):
                 return
             m, ch = groups[0]
             car = self.s.vin_info.summary if self.s.vin_info else ""
-            feat = finder.make_feature(name, m.bus, m.addr, m.name, ch, self.desc.text().strip(), "Custom",
-                                       self.hw.text().strip(), car, identity=self.identity(m), learned_on=car)
+            feat = finder.make_feature(name, m.bus, m.addr, m.name, ch, self.desc.text().strip(),
+                                       "Custom",
+                                       self.hw.text().strip(), car, identity=self.identity(m), learned_on=car,
+                                       sizes=self.sizes(m))
             path = finder.save_feature(feat)
             groups = groups[1:]
         for m, ch in groups:
-            finder.merge_into(path, m.bus, m.addr, m.name, ch, self.identity(m))
+            finder.merge_into(path, m.bus, m.addr, m.name, ch, self.identity(m), self.sizes(m))
         self.s.log(f"Feature saved: {path}")
         self.s.features_changed.emit()
-        QMessageBox.information(self, "Feature saved",
-                                f"Saved to {path}<br><br>It's marked <b>not verified</b>. Once you've checked it "
-                                "works, set \"verified\": true in the file.<br><br>Run a module scan and the "
-                                "Features page will show whether it's on.")
+        self.saved_rows = {(m.key, c.did, c.byte) for m, chs in self.chosen_groups() for c in chs} | \
+            {(m.key, c.did, c.byte) for (m, c), cb in zip(self.rows, self.checks) if cb.isChecked()}
+        self.saved_name = self.name.text().strip() or self.target.currentText().removeprefix("Add to: ")
+        self.saved_path = path
+        if not self.quiet:
+            QMessageBox.information(self, "Feature saved",
+                                    f"<b>{html.escape(self.saved_name)}</b> is on the Features page.<br><br>Switch it "
+                                    "off and on there to check it really controls that feature, then press <b>It works "
+                                    "- mark as working on my car</b>.")
         self.accept()
 
 
@@ -2247,7 +2276,7 @@ class LearnDialog(QDialog):
                 out = {}
                 for m in ms:
                     try:
-                        out[(m.bus, m.addr)] = asbuilt.read_blocks(self.s.uds, m)
+                        out[(m.bus, m.addr)] = read_blocks(self.s.uds, m)
                     except (UdsError, ElmError) as e:
                         self.s.log(f"{m.name}: couldn't read - {e}")
                 return out
@@ -2458,7 +2487,7 @@ class AsBuiltPage(Page):
             self.s.log(f"Read {len(blocks)} block(s) from {m.name}")
             if then:
                 then()
-        self.s.ensure_bus(m.bus, lambda: self.s.runner.run(lambda: asbuilt.read_blocks(self.s.uds, m, prog), ok))
+        self.s.ensure_bus(m.bus, lambda: self.s.runner.run(lambda: read_blocks(self.s.uds, m, prog), ok))
 
     def open_module(self, bus: str, addr: int, did: Optional[int] = None, byte: Optional[int] = None):
         """Jump here from Features: select the module, read it and highlight the block/byte."""
@@ -2829,7 +2858,7 @@ def restore_all(parent, s: "Session", what: str, pairs: List[Tuple[Module, Calla
         out = []
         for m, wanted in mods:
             try:
-                cur = asbuilt.read_blocks(s.uds, m)
+                cur = read_blocks(s.uds, m)
             except (UdsError, ElmError) as e:
                 s.log(f"{m.name}: couldn't read - {e}")
                 continue
@@ -2865,6 +2894,99 @@ def restore_all(parent, s: "Session", what: str, pairs: List[Tuple[Module, Calla
                                                    "Turn the ignition off for 30 seconds, then back on."]).exec()
         s.before_write(lambda: s.per_bus(wjobs, lambda b, r: results.extend(r), written))
     s.per_bus(jobs, lambda b, r: plan.extend(r), planned)
+
+
+class CreateFeaturesFlow:
+    """Guided: compare the car with its factory file, then name each group of changes as a feature
+    ("this is cruise control"), until everything that was changed is named. Then test, mark working, share."""
+
+    def __init__(self, win):
+        self.win, self.s = win, win.s
+        self.created: List[Tuple[str, str]] = []   # (name, file)
+        self.remaining: list = []
+        win.create_flow = self    # keep alive while the car is read
+
+    def start(self):
+        s, win = self.s, self.win
+        if not s.connected:
+            QMessageBox.information(win, "Create features", "Connect to your car first.")
+            s.go("Connect")
+            return
+        if s.any_car:
+            QMessageBox.information(win, "Create features", "Features can be created on Ford-family cars only.")
+            return
+        if not s.modules:
+            QMessageBox.information(win, "Create features", "Scan the car first so Hatchling knows its modules.")
+            s.go("Modules")
+            return
+        if not s.factory:
+            if s.factory_available:
+                if QMessageBox.question(win, "Create features",
+                                        "This works by comparing your car with how it left the factory, so it needs "
+                                        "your factory file first. Get it now?") == QMessageBox.Yes:
+                    s.go("Modules")
+                    win.pages["Modules"].get_factory_file()
+            else:
+                QMessageBox.information(win, "Create features",
+                                        f"{s.make} doesn't publish factory files, so use <b>Learn a feature from my "
+                                        "car</b> instead: it watches what changes while you switch the feature on "
+                                        "another way.")
+            return
+        if QMessageBox.question(
+                win, "Create features from my car",
+                "<b>Turn the changes made to your car into features others can use.</b><br><br>"
+                "1. Hatchling compares every module with your factory file.<br>"
+                "2. You tick the changes that belong to one feature and name it - e.g. <i>Cruise control</i>. "
+                "Repeat until every change has a name.<br>"
+                "3. On the Features page you check each one works, mark it as working and share it.<br><br>"
+                "Nothing is written to the car. Start now?") != QMessageBox.Yes:
+            return
+        win.pages["Modules"].changes_since_factory(then=self.got)
+
+    def got(self, changed):
+        if not changed:
+            QMessageBox.information(self.win, "Create features", "Every module still matches its factory settings, "
+                                    "so there's nothing to turn into a feature.<br><br>If you changed something "
+                                    "another way, use <b>Learn a feature from my car</b>.")
+            return
+        self.remaining = [(m, c) for m, chs in changed for c in chs]
+        self.next()
+
+    def next(self):
+        groups: Dict[str, Tuple[Module, list]] = {}
+        for m, c in self.remaining:
+            groups.setdefault(m.key, (m, []))[1].append(c)
+        n = len(self.created) + 1
+        dlg = FeatureFinderDialog(
+            self.win, self.s, list(groups.values()), title=f"Feature {n}: tick the changes that belong together",
+            before_label="Factory", after_label="Your car", offer_flip=False, start_unchecked=True, quiet=True,
+            hint="These are the settings that are different from how your car left the factory. Tick the ones that "
+                 "make up ONE feature - a feature often spans several modules (cruise control: engine, body and "
+                 "cluster). Name it and save; the rest come back for the next one. Not sure what something is? "
+                 "Leave it unticked.")
+        if dlg.exec() and dlg.saved_rows:
+            self.created.append((dlg.saved_name, dlg.saved_path))
+            self.remaining = [(m, c) for m, c in self.remaining if (m.key, c.did, c.byte) not in dlg.saved_rows]
+            if self.remaining and QMessageBox.question(
+                    self.win, "Saved", f"<b>{html.escape(dlg.saved_name)}</b> saved.<br><br>{len(self.remaining)} "
+                    "change(s) aren't in a feature yet. Name the next one?") == QMessageBox.Yes:
+                QTimer.singleShot(0, self.next)
+                return
+        self.finish()
+
+    def finish(self):
+        self.win.create_flow = None
+        if not self.created:
+            return
+        self.s.features_changed.emit()
+        names = ", ".join(n for n, _ in self.created)
+        SuccessDialog(self.win, f"{len(self.created)} feature(s) created",
+                      [f"Created: <b>{html.escape(names)}</b>.",
+                       "Next, on the Features page, switch each one off and on to check it really controls that "
+                       "feature.",
+                       "When it works, press <b>It works - mark as working on my car</b>, then <b>Share with other "
+                       "owners</b>. Your VIN is never shared."]).exec()
+        self.s.go("Features")
 
 
 # ---------------------------------------------------------------- Dashboard
@@ -4048,7 +4170,15 @@ class FeaturesPage(Page):
         self.list = QListWidget()
         self.list.setMinimumWidth(260)
         self.list.currentRowChanged.connect(self.show_feature)
-        split.addWidget(self.list)
+        left = QWidget()
+        ll0 = QVBoxLayout(left)
+        ll0.setContentsMargins(0, 0, 0, 0)
+        ll0.addWidget(self.list, 1)
+        create = button("+ Create features from my car")
+        create.setToolTip("Turn the changes made to your car since the factory into features others can use")
+        create.clicked.connect(lambda: self.s.open_create_features())
+        ll0.addWidget(create)
+        split.addWidget(left)
         self.entries: List[Tuple[str, object]] = []   # per list row: ("head", text) / ("feat", Feature) / ("lib", entry)
 
         self.right_stack = QStackedWidget()
@@ -4094,77 +4224,77 @@ class FeaturesPage(Page):
         self.banner.hide()
         rl.addWidget(self.banner)
 
-        # hardware
-        hw, hwl = card()
-        hrow = QHBoxLayout()
-        hl2 = QLabel("<b>Hardware check</b>")
-        hrow.addWidget(hl2)
-        hrow.addStretch()
-        self.hw_btn = button("Check hardware")
+        # will it work on this car? (checked again with fresh values right before writing)
+        vc, vcl = card()
+        self.verdict_card = vc
+        vrow = QHBoxLayout()
+        vrow.addWidget(QLabel("<b>Will this work on my car?</b>"))
+        vrow.addStretch()
+        self.hw_btn = button("Check the parts are fitted")
+        self.hw_btn.setObjectName("link")
         self.hw_btn.clicked.connect(lambda: self.check_hardware())
-        hrow.addWidget(self.hw_btn)
-        hwl.addLayout(hrow)
+        vrow.addWidget(self.hw_btn)
+        vcl.addLayout(vrow)
+        self.verdict = QLabel("")
+        self.verdict.setWordWrap(True)
+        vcl.addWidget(self.verdict)
         self.hw_list = QLabel("")
         self.hw_list.setWordWrap(True)
-        hwl.addWidget(self.hw_list)
-        rl.addWidget(hw)
+        vcl.addWidget(self.hw_list)
+        self.risk = QCheckBox("I understand it hasn't been tested on modules like mine, and I have a backup")
+        self.risk.hide()
+        vcl.addWidget(self.risk)
+        rl.addWidget(vc)
 
         mrow = QHBoxLayout()
-        lbl = QLabel("Where it's set")
-        lbl.setObjectName("subtle")
-        mrow.addWidget(lbl)
-        mrow.addStretch()
-        self.tech_box = QCheckBox("Show technical details")
+        self.tech_box = QCheckBox("Show the details (which modules, blocks and bits)")
         self.tech_box.toggled.connect(self.set_tech)
         mrow.addWidget(self.tech_box)
+        mrow.addStretch()
         rl.addLayout(mrow)
-        self.rows_box = QVBoxLayout()
+        self.details_w = QWidget()
+        self.rows_box = QVBoxLayout(self.details_w)
+        self.rows_box.setContentsMargins(0, 0, 0, 0)
         self.rows_box.setSpacing(8)
-        rl.addLayout(self.rows_box)
+        self.details_w.hide()
+        rl.addWidget(self.details_w)
         rl.addStretch()
-
-        self.confirm = QCheckBox("I've checked these values are right for my car")
-        rl.addWidget(self.confirm)
+        self.verdict_now: Optional[features.Verdict] = None
         self.hint = QLabel("")
         self.hint.setWordWrap(True)
         self.hint.setObjectName("subtle")
         rl.addWidget(self.hint)
         row = QHBoxLayout()
-        self.read_btn = button("Check what's on")
-        self.apply_btn = button("Apply changes", "primary")
-        self.verify_btn = button("Mark as working on my car")
-        self.share_btn = button("Share to library")
-        import_btn = button("Import feature")
-        self.export_btn = button("Export")
-        reload_btn = button("Reload files")
+        self.read_btn = button("Check again")
+        self.read_btn.setToolTip("Read the car again to see whether it's on")
+        self.apply_btn = button("Apply changes", "primary")      # only used with the details shown
+        self.verify_btn = button("It works - mark as working on my car", "primary")
+        self.share_btn = button("Share with other owners")
         self.read_btn.clicked.connect(lambda: self.read_status())
-        self.apply_btn.clicked.connect(self.apply_changes)
+        self.apply_btn.clicked.connect(lambda: self.apply_changes())
         self.verify_btn.clicked.connect(self.mark_verified)
         self.share_btn.clicked.connect(self.share)
-        import_btn.clicked.connect(self.import_feature)
-        self.export_btn.clicked.connect(self.export_feature)
-        reload_btn.clicked.connect(self.reload)
-        row.addWidget(self.read_btn)
-        row.addWidget(self.apply_btn)
+        from PySide6.QtWidgets import QMenu, QToolButton
+        more = QToolButton()
+        more.setText("More ▾")
+        more.setPopupMode(QToolButton.InstantPopup)
+        menu = QMenu(more)
+        menu.addAction("Create features from my car…", lambda: self.s.open_create_features())
+        menu.addAction("Learn a feature from my car…", lambda: self.s.open_learn())
+        menu.addAction("Show what's changed since the factory", lambda: self.s.open_factory_diff())
+        menu.addSeparator()
+        self.export_act = menu.addAction("Export this feature…", self.export_feature)
+        menu.addAction("Import a feature file…", self.import_feature)
+        menu.addAction("Reload feature files", self.reload)
+        more.setMenu(menu)
+        self.more_btn = more
         row.addWidget(self.verify_btn)
-        row.addStretch()
         row.addWidget(self.share_btn)
-        row.addWidget(import_btn)
-        row.addWidget(self.export_btn)
-        row.addWidget(reload_btn)
+        row.addWidget(self.apply_btn)
+        row.addStretch()
+        row.addWidget(self.read_btn)
+        row.addWidget(more)
         rl.addLayout(row)
-        lrow = QHBoxLayout()
-        learn_btn = button("Learn a feature from my car")
-        learn_btn.setObjectName("link")
-        learn_btn.clicked.connect(lambda: self.s.open_learn())
-        fac_btn = button("Find what's changed since the factory")
-        fac_btn.setObjectName("link")
-        fac_btn.clicked.connect(lambda: self.s.open_factory_diff())
-        lrow.addWidget(learn_btn)
-        lrow.addSpacing(16)
-        lrow.addWidget(fac_btn)
-        lrow.addStretch()
-        rl.addLayout(lrow)
 
         # library entry view (feature available for this car but not installed)
         libw = QWidget()
@@ -4419,12 +4549,10 @@ class FeaturesPage(Page):
         verified = (f"<span style='color:{OK}'>Verified on this car</span>" if f.verified
                     else f"<span style='color:{WARN}'>Shared from another car - not tested on yours yet</span>"
                     if f.shared else f"<span style='color:{WARN}'>Not verified - check every value yourself</span>")
-        self.meta.setText(f"{verified}<br>Vehicle: {f.vehicle or '-'}"
-                          + (f" · learned on a {f.learned_on}" if f.learned_on and f.learned_on != f.vehicle else "")
-                          + f"<br>Hardware needed: {f.hardware_required or 'none'}"
-                          + (f"<br>Source: {f.source}" if f.source else "")
-                          + (f"<br>{self.confidence(f)}" if self.confidence(f) else "")
-                          + self.compat_html(f))
+        self.meta.setText(f"{verified}"
+                          + (f" · learned on a {f.learned_on}" if f.learned_on else "")
+                          + (f"<br>Needs fitted: {f.hardware_required}" if f.hardware_required else "")
+                          + (f"<br>{self.confidence(f)}" if self.confidence(f) else ""))
         for p in f.parts:
             row = PartRow(p, self.update_pending, self.s.tech)
             self.rows.append(row)
@@ -4434,14 +4562,60 @@ class FeaturesPage(Page):
                 row.set_actual(st)
             elif not p.configured:
                 row.set_actual(features.NEEDS_VALUES)
-        self.confirm.setVisible(not f.verified)
-        self.confirm.setChecked(False)
+        self.details_w.setVisible(self.s.tech)
+        self.risk.setChecked(False)
+        self.render_verdict(f)
         self.render_hardware()
         self.update_pending()
 
     def set_tech(self, on: bool):
         self.s.tech = on
         self.show_feature()
+
+    def lib_confirmations(self, f: features.Feature) -> Dict[str, int]:
+        if not f.library_id:
+            return {}
+        idx, _ = library.best_index()
+        e = next((e for e in (idx or {}).get("features", []) if e.get("id") == f.library_id), None)
+        return (e or {}).get("confirmations_by_family") or {}
+
+    def verdict_for(self, f: features.Feature, blocks=None, parts=None) -> Optional[features.Verdict]:
+        if not self.s.modules or not f.configured:
+            return None
+        return features.write_verdict(f, self.scanned_identities(), blocks if blocks is not None else self.blocks,
+                                      parts, self.lib_confirmations(f))
+
+    def render_verdict(self, f: features.Feature):
+        v = self.verdict_now = self.verdict_for(f)
+        if v is None:
+            self.verdict.setText(f"<span style='color:{MUTED}'>Connect and scan the car, and Hatchling checks it "
+                                 "against your modules before anything is written.</span>")
+            self.risk.hide()
+            return
+        col = {features.PROVEN: OK, features.LIKELY: OK, features.UNTESTED: WARN, features.WONT: DANGER}[v.level]
+        icon = {features.PROVEN: "✓", features.LIKELY: "✓", features.UNTESTED: "!", features.WONT: "✗"}[v.level]
+        extra = {features.UNTESTED: "<br>Hatchling won't write it unless you tick the box below.",
+                 features.WONT: "<br>Hatchling won't write it to this car."}.get(v.level, "")
+        self.verdict.setText(f"<span style='color:{col};font-size:12pt'><b>{icon} {v.headline}</b></span><br>"
+                             + "<br>".join(html.escape(r) for r in v.reasons) + extra)
+        self.risk.setVisible(v.level == features.UNTESTED)
+
+    def allowed(self, v: Optional[features.Verdict], f: features.Feature) -> bool:
+        """Says why not (and returns False) when the verdict stops a write."""
+        if v is None:
+            return True
+        if v.level == features.WONT:
+            QMessageBox.warning(self, f.name, f"<b>{f.name} won't work on your car</b><br><br>"
+                                + "<br>".join(html.escape(r) for r in v.reasons)
+                                + "<br><br>Nothing was written.")
+            return False
+        if v.level == features.UNTESTED and not self.risk.isChecked():
+            QMessageBox.information(self, f.name, f"<b>{f.name} hasn't been tested on modules like yours.</b><br><br>"
+                                    + "<br>".join(html.escape(r) for r in v.reasons)
+                                    + "<br><br>If you still want to try it, tick <i>I understand…</i> under "
+                                    "<b>Will this work on my car?</b> - a backup is made first.")
+            return False
+        return True
 
     def scanned_identities(self) -> Dict[features.ModKey, dict]:
         return {(m.bus, m.addr): m.identity for m in self.s.modules.values()}
@@ -4491,6 +4665,11 @@ class FeaturesPage(Page):
         keep = f.id
         self.reload()
         self.select(keep)
+        if not f.library_id and not f.shared and library.repo() and QMessageBox.question(
+                self, "Share it?", f"<b>{html.escape(f.name)}</b> works on your car. Share it so other owners can "
+                "turn it on too?<br><br>Hatchling checks their modules against yours before anything is written to "
+                "their car. Your VIN is never shared.") == QMessageBox.Yes:
+            self.share()
 
     def select(self, fid: str):
         for i, x in enumerate(self.feats):
@@ -4583,10 +4762,10 @@ class FeaturesPage(Page):
         if not f:
             return
         if not f.checks:
-            self.hw_list.setText(f"<span style='color:{MUTED}'>No hardware checks defined for this feature.</span>")
-            self.hw_btn.setEnabled(False)
+            self.hw_list.setText("")
+            self.hw_btn.hide()
             return
-        self.hw_btn.setEnabled(True)
+        self.hw_btn.show()
         res = self.hw.get(f.id) or [None] * len(f.checks)
         lines = []
         for c, r in zip(f.checks, res):
@@ -4610,10 +4789,11 @@ class FeaturesPage(Page):
         self.master.setEnabled(bool(usable) and len(usable) == len(self.rows))
         self.master.setChecked(bool(usable) and all(r.toggle.isChecked() for r in usable))
         self.verify_btn.setVisible(not f.verified and self.feature_state(f) == features.ENABLED)
-        self.share_btn.setVisible(f.verified and not f.library_id)
+        self.share_btn.setVisible(f.verified and not f.library_id and not f.shared)
         n = sum(r.pending for r in self.rows)
         self.apply_btn.setText(f"Apply changes ({n})" if n else "Apply changes")
-        self.apply_btn.setEnabled(True)
+        self.apply_btn.setVisible(self.s.tech)
+        self.read_btn.setVisible(self.s.connected)
         st = self.feature_state(f)
         self.hint.setText(self.next_step(f, st, n)[0])
         hint = {"not read": "Hatchling hasn't read the car yet",
@@ -4640,6 +4820,9 @@ class FeaturesPage(Page):
                 r.toggle.blockSignals(False)
                 r.touched = True
         self.update_pending()
+        if not self.s.tech:          # the switch does the whole job: checks, backup, write, check it took
+            if not self.apply_changes():
+                self.show_feature()  # nothing started - put the switch back
 
     # ---- adapter work -------------------------------------------------
     def _read_parts(self, parts: List[features.Part], then: Callable[[], None]):
@@ -4648,7 +4831,7 @@ class FeaturesPage(Page):
             addrs = sorted({p.module for p in parts if p.bus == bus})
 
             def job(bus=bus, addrs=addrs):
-                return {(bus, a): asbuilt.read_blocks(self.s.uds, self.s.module_for(bus, a)) for a in addrs}
+                return {(bus, a): read_blocks(self.s.uds, self.s.module_for(bus, a)) for a in addrs}
             jobs[bus] = job
         self.s.per_bus(jobs, lambda b, r: self.blocks.update(r), then)
 
@@ -4732,6 +4915,12 @@ class FeaturesPage(Page):
 
         def got_fresh():
             current = {k: self.blocks[k] for k in wanted}
+            v = self.verdict_for(f, current, parts)
+            if v is not None and (v.level == features.WONT or
+                                  (v.level == features.UNTESTED and not self.risk.isChecked())):
+                self.allowed(v, f)
+                self.show_feature()
+                return
             try:
                 targets = features.plan(f, current, wanted)
             except KeyError as e:
@@ -4745,11 +4934,13 @@ class FeaturesPage(Page):
                 for p in parts:
                     if p.key in targets:
                         lines.append(f"<b>{p.label}</b> → {'ON' if wanted[p.key] else 'OFF'}")
-                        for d, i, a, b in asbuilt.diff(current[p.key], targets[p.key]):
-                            lines.append(f"&nbsp;&nbsp;{d:04X} byte {i}: {a:02X} → {b:02X}")
+                        if self.s.tech:
+                            for d, i, a, b in asbuilt.diff(current[p.key], targets[p.key]):
+                                lines.append(f"&nbsp;&nbsp;{d:04X} byte {i}: {a:02X} → {b:02X}")
                 if QMessageBox.question(self, f.name, "<br>".join(lines) +
                                         "<br><br>Each module is backed up before writing. Keep the ignition on "
                                         "and a charger connected.") != QMessageBox.Yes:
+                    self.show_feature()
                     return
             jobs = {}
             for bus in {k[0] for k in targets}:
@@ -4791,44 +4982,43 @@ class FeaturesPage(Page):
             return "Hatchling needs to read the car to see whether this is on.", "read"
         if not pending:
             now = "on" if st == features.ENABLED else "off" if st == features.DISABLED else "partly on"
-            return (f"It's {now} right now. Flip the main switch (or a module's switch) to change it, then press "
-                    "Apply changes."), "none"
-        return f"Ready - press Apply changes to write {pending} module(s). A backup is made first.", None
+            return f"It's {now} right now. Flip the switch to change it.", "none"
+        return f"Ready - {pending} module(s) to change. A backup is made first.", None
 
-    def apply_changes(self):
+    def apply_changes(self) -> bool:
+        """Starts writing the switched modules. Returns False if nothing was started."""
         f = self.feature()
         if not f:
-            return
+            return False
         rows_pending = sum(r.pending for r in self.rows)
         msg, action = self.next_step(f, self.feature_state(f), rows_pending)
         if action == "connect":
             if QMessageBox.question(self, "Hatchling", msg + " Go to Connection now?") == QMessageBox.Yes:
                 self.s.go("Connect")
-            return
+            return False
         if action == "learn":
             if QMessageBox.question(self, "Hatchling", msg + "<br><br>Learn it from your car now?") == QMessageBox.Yes:
                 self.s.open_learn(f.name)
-            return
+            return False
         if action == "read":
             if QMessageBox.question(self, "Hatchling", msg + " Read it now?") == QMessageBox.Yes:
                 self.read_status()
-            return
+            return False
         if action == "none":
             QMessageBox.information(self, "Hatchling", msg)
-            return
-        if not f.verified and not self.confirm.isChecked():
-            QMessageBox.warning(self, "Hatchling", "This feature isn't marked verified. Tick the confirmation box "
-                                                 "once you've checked its values for your car.")
-            return
+            return False
         wanted = {r.part.key: r.toggle.isChecked() for r in self.rows if r.pending}
         if not wanted:
-            return
+            return False
+        if not self.allowed(self.verdict_for(f, parts=[p for p in f.parts if p.key in wanted]), f):
+            return False
         enabling = any(wanted.values())
         go = lambda: self._write(f, wanted, True, lambda: self.after_write(f, enabling))
         if enabling:
             self._require_hardware(f, go)
         else:
             go()
+        return True
 
     def after_write(self, f: features.Feature, enabling: bool):
         st = self.feature_state(f)
@@ -4858,10 +5048,9 @@ class FeaturesPage(Page):
         f = self.feature()
         if not f or not self.need_connection():
             return
-        if not f.verified and not self.confirm.isChecked():
-            QMessageBox.warning(self, "Hatchling", "Tick the confirmation box first - this feature isn't verified.")
-            return
         todo = features.remaining_parts(f, self.states.get(f.id, {}))
+        if not self.allowed(self.verdict_for(f, parts=todo), f):
+            return
         if not todo:
             self.celebrate(f)
             return
@@ -5875,6 +6064,7 @@ class MainWindow(QMainWindow):
         self.s.go = self.go
         self.s.open_learn = self.open_learn
         self.s.open_factory_diff = self.open_factory_diff
+        self.s.open_create_features = lambda: CreateFeaturesFlow(self).start()
         home = self.pages["Home"]
         home.go = self.go
         home.go_codes = lambda: self.pages["Fault codes"].read_all()

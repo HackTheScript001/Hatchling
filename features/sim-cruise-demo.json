@@ -20,7 +20,11 @@
           "on": "0x02",
           "off": "0x00"
         }
-      ]
+      ],
+      "part": "D1BA-12A650-AFB",
+      "blocks": {
+        "DE01": 3
+      }
     },
     {
       "module": "0x726",
@@ -34,7 +38,11 @@
           "on": "0x04",
           "off": "0x00"
         }
-      ]
+      ],
+      "part": "C1BT-14A073-AE",
+      "blocks": {
+        "DE01": 5
+      }
     },
     {
       "module": "0x720",
@@ -48,7 +56,11 @@
           "on": "0x10",
           "off": "0x00"
         }
-      ]
+      ],
+      "part": "C1BT-10849-LK",
+      "blocks": {
+        "DE01": 4
+      }
     }
   ],
   "hardware_checks": [

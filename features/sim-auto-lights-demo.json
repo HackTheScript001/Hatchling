@@ -20,7 +20,11 @@
           "on": "0x80",
           "off": "0x00"
         }
-      ]
+      ],
+      "part": "C1BT-14A073-AE",
+      "blocks": {
+        "DE00": 4
+      }
     }
   ],
   "hardware_checks": [

@@ -199,6 +199,33 @@ check("garage starts empty", garage.cars([(VIN, 5.0, 3)], {}) == [])
 g = garage.add({}, VIN, "My Fiesta")
 check("garage lists added cars", [c.name for c in garage.cars([(VIN, 5.0, 3)], g)] == ["My Fiesta"])
 
+# "Will this work on my car?"
+from core import features as F  # noqa: E402
+
+feat = F._parse({"name": "Demo", "verified": True, "modules": [
+    {"module": "0x726", "bus": "MS", "part": "C1BT-14A073-AE", "blocks": {"DE00": 4},
+     "changes": [{"did": "DE00", "byte": 1, "mask": "0x80", "on": "0x80", "off": "0x00"}]}]}, "demo")
+same = {("MS", 0x726): {"Part number": "C1BT-14A073-AE"}}
+fam = {("MS", 0x726): {"Part number": "C1BT-14A073-AF"}}
+other = {("MS", 0x726): {"Part number": "H1BT-14A073-AA"}}
+ok_blocks = {("MS", 0x726): {0xDE00: bytes.fromhex("2A0040A6")}}
+check("verdict: proven on the same modules", F.write_verdict(feat, same, ok_blocks).level == F.PROVEN)
+check("verdict: likely on another revision", F.write_verdict(feat, fam, ok_blocks).level == F.LIKELY)
+check("verdict: untested on different modules", F.write_verdict(feat, other, ok_blocks).level == F.UNTESTED)
+check("verdict: confirmations prove it", F.write_verdict(
+    F._parse({**{"name": "x"}, "modules": [{"module": "0x726", "bus": "MS", "part": "C1BT-14A073-AE",
+              "changes": [{"did": "DE00", "byte": 1, "mask": "0x80", "on": "0x80", "off": "0x00"}]}]}, "x"),
+    same, ok_blocks, None, {"C1BT-14A073": 2}).level == F.PROVEN)
+check("verdict: different block layout won't work",
+      F.write_verdict(feat, same, {("MS", 0x726): {0xDE00: bytes.fromhex("2A0040A600")}}).level == F.WONT)
+two_bit = F._parse({"name": "y", "modules": [{"module": "0x726", "bus": "MS", "part": "C1BT-14A073-AE",
+                    "changes": [{"did": "DE00", "byte": 1, "mask": "0x06", "on": "0x06", "off": "0x00"}]}]}, "y")
+check("verdict: unrecognised current value won't work",
+      F.write_verdict(two_bit, same, {("MS", 0x726): {0xDE00: bytes.fromhex("2A0240A6")}}).level == F.WONT)
+check("verdict: missing module won't work", F.write_verdict(feat, {}, {}).level == F.WONT)
+saved = finder.make_feature("T", "MS", 0x726, "BCM", [finder.ByteChange(0xDE00, 1, 0, 0x80)], sizes={0xDE00: 4})
+check("new features record block sizes", saved["modules"][0].get("blocks") == {"DE00": 4})
+
 check("wish list loads", len(library.wishlist()) >= 5)
 
 from core import vin as vinmod  # noqa: E402
