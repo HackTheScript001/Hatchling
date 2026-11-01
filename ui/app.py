@@ -5194,14 +5194,17 @@ class GaragePage(Page):
             row.addWidget(b)
         row.addStretch()
         row.addWidget(forget)
-        self.root.addLayout(row)
+        self.action_row = QWidget()
+        self.action_row.setLayout(row)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.root.addWidget(self.action_row)
         self.tbl = table(["Name", "Car", "VIN", "Last connected", "Factory file", "Backups", "Trips"])
         self.tbl.itemDoubleClicked.connect(lambda _: self.open_history())
         self.root.addWidget(self.tbl, 1)
         self.empty = QLabel("Your garage is empty. Connect to your car, then press <b>Add this car to my garage</b>.")
         self.empty.setObjectName("subtle")
-        self.empty.setAlignment(Qt.AlignCenter)
-        self.root.addWidget(self.empty)
+        self.empty.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        self.root.addWidget(self.empty, 1)      # takes the spare space when the list is hidden
         self.cars: List[garage.Car] = []
         s.connected_changed.connect(lambda _: self.render())
         s.factory_changed.connect(self.render)
@@ -5219,18 +5222,20 @@ class GaragePage(Page):
         saved = self.saved()
         rows = self.s.history.vins() if self.s.history else []
         self.cars = garage.cars(rows, saved)
-        # offer to add the connected car (not simulators, and not one that's already here)
-        here = self.s.connected and self.s.vin and not self.s.simulated
+        # offer to add the connected car if it isn't here yet
+        here = self.s.connected and self.s.vin
         can_add = bool(here and self.s.vin not in saved and factory.VIN_RE.fullmatch(self.s.vin))
         self.add_card.setVisible(can_add)
         if can_add:
             car = self.s.vin_info.summary if self.s.vin_info else "This car"
-            self.add_text.setText(f"<b>Connected: {html.escape(car)}</b><br>VIN {html.escape(self.s.vin)} - add it to "
-                                  "your garage to keep its history, backups and trips together.")
+            sim = " (simulator)" if self.s.simulated else ""
+            self.add_text.setText(f"<b>Connected: {html.escape(car)}{sim}</b><br>VIN {html.escape(self.s.vin)} - add "
+                                  "it to your garage to keep its history, backups and trips together.")
         self.tbl.setVisible(bool(self.cars))
+        self.action_row.setVisible(bool(self.cars))
         self.empty.setVisible(not self.cars)
-        for b in self.actions:
-            b.setEnabled(bool(self.cars))
+        self.empty.setText("Your garage is empty. " + ("Press <b>Add this car to my garage</b> above." if can_add else
+                           "Connect to your car and it can be added here."))
         self.tbl.setRowCount(0)
         for c in self.cars:
             r = self.tbl.rowCount()
@@ -5247,7 +5252,7 @@ class GaragePage(Page):
         if not (self.s.connected and self.s.vin):
             return
         from PySide6.QtWidgets import QInputDialog
-        suggestion = self.s.vin_info.summary if self.s.vin_info else ""
+        suggestion = (self.s.vin_info.summary if self.s.vin_info else "") + (" (simulator)" if self.s.simulated else "")
         name, ok = QInputDialog.getText(self, "Add to my garage", "Give this car a name (e.g. \"My Fiesta\"):",
                                         text=suggestion)
         if not ok:

@@ -272,8 +272,8 @@ w.go("Garage")
 gp.render()
 if gp.cars or not gp.empty.isVisible():
     problems.append("[garage] the garage should start empty")
-if gp.add_card.isVisible():
-    problems.append("[garage] offered to add a simulator car")
+if not gp.add_card.isVisible():
+    problems.append("[garage] no option to add the connected car")
 gp.add_car()      # the owner adds the connected car
 if len(gp.cars) != 1:
     problems.append("[garage] adding the connected car didn't work")
