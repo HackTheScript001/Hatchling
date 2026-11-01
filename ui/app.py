@@ -4789,8 +4789,98 @@ class FeaturesPage(Page):
 
 
 # ---------------------------------------------------------------- main window
+class UpdateDialog(QDialog):
+    """Updating Hatchling: finishes the download, then installs and reopens."""
+
+    def __init__(self, win: "MainWindow"):
+        super().__init__(win)
+        self.win = win
+        rel = win.update_rel
+        self.setWindowTitle("Updating Hatchling")
+        self.setMinimumWidth(460)
+        lay = QVBoxLayout(self)
+        head = QLabel(f"<span style='font-size:15pt;font-weight:600'>Updating Hatchling to {html.escape(rel.version)}"
+                      "</span>")
+        lay.addWidget(head)
+        self.status = QLabel("")
+        self.status.setWordWrap(True)
+        lay.addWidget(self.status)
+        self.bar = QProgressBar()
+        self.bar.setTextVisible(True)
+        lay.addWidget(self.bar)
+        if rel.notes:
+            notes = QLabel("<b>What's new</b><br>" + html.escape(rel.notes[:400]).replace("\n", "<br>"))
+            notes.setWordWrap(True)
+            notes.setObjectName("subtle")
+            lay.addWidget(notes)
+        row = QHBoxLayout()
+        row.addStretch()
+        self.later = button("Later")
+        self.later.clicked.connect(self.reject)
+        self.retry = button("Try again", "primary")
+        self.retry.clicked.connect(self.try_again)
+        self.retry.hide()
+        row.addWidget(self.later)
+        row.addWidget(self.retry)
+        lay.addLayout(row)
+        win.upd_progress.connect(self.progress)
+        win.update_ready.connect(self.step)
+        self.progress(*win.update_done)
+        self.step()
+
+    def progress(self, done, total):
+        if self.win.update_path:
+            return
+        if total:
+            self.bar.setRange(0, 100)
+            self.bar.setValue(100 * done // total)
+            self.status.setText(f"Downloading… {done / 1048576:.1f} of {total / 1048576:.1f} MB")
+        else:
+            self.bar.setRange(0, 0)
+            self.status.setText("Downloading…")
+
+    def step(self):
+        w = self.win
+        if w.update_path:
+            self.bar.setRange(0, 0)   # busy
+            self.status.setText("Installing… Windows may ask for permission. Hatchling will close and reopen on "
+                                "the new version in a moment.")
+            self.later.setEnabled(False)
+            QTimer.singleShot(400, self.install)
+        elif w.update_error:
+            self.bar.setRange(0, 100)
+            self.bar.setValue(0)
+            self.status.setText(f"<span style='color:{DANGER}'>The download didn't finish: "
+                                f"{html.escape(w.update_error)}</span>")
+            self.retry.show()
+
+    def install(self):
+        err = self.win.install_update_now()
+        if err:
+            self.bar.setRange(0, 100)
+            self.status.setText(f"<span style='color:{DANGER}'>The update couldn't start: {html.escape(err)}</span>")
+            self.later.setEnabled(True)
+            self.later.setText("Close")
+            return
+        self.accept()
+
+    def done(self, r):
+        for sig, slot in ((self.win.upd_progress, self.progress), (self.win.update_ready, self.step)):
+            try:
+                sig.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+        super().done(r)
+
+    def try_again(self):
+        self.retry.hide()
+        self.status.setText("Downloading…")
+        self.win.download_update()
+
+
 class MainWindow(QMainWindow):
     upd_progress = Signal(object, object)
+    update_ready = Signal()
 
     def __init__(self):
         super().__init__()
@@ -4945,73 +5035,80 @@ class MainWindow(QMainWindow):
             self.showNormal()
 
     # ---- updates: found, downloaded and installed from inside the app ----------------
+    # Hatchling downloads a new version in the background as soon as it's found. Clicking the update
+    # button opens the "Updating Hatchling" window: it shows the rest of the download, then starts the
+    # installer (its own progress window, no questions) and Hatchling reopens on the new version.
     def check_updates(self):
+        self.update_rel = None
         self.update_path = ""
+        self.update_error = ""
+        self.update_done = (0, 0)
         self.update_btn: Optional[QPushButton] = None
+        self.upd_progress.connect(self._on_update_progress)
 
         def ok(rel):
             if rel is None:
                 updates.clean_old()
                 return
             self.s.log(f"Update available: Hatchling {rel.version}")
+            self.update_rel = rel
             if rel.installer and rel.sha256 and sys.platform == "win32":
-                self.download_update(rel)
+                self.update_btn = button(f"Update to v{rel.version}", "primary")
+                self.update_btn.setToolTip(f"What's new:\n{rel.notes}")
+                self.update_btn.clicked.connect(self.open_update_window)
+                self.statusBar().addPermanentWidget(self.update_btn)
+                self.download_update()
             else:   # nothing we can install ourselves - fall back to the download page
-                self.show_update_button(f"Update available: v{rel.version}",
-                                        lambda: open_url(rel.page or rel.url), rel.notes)
+                b = button(f"Update available: v{rel.version}", "primary")
+                b.clicked.connect(lambda: open_url(rel.page or rel.url))
+                self.statusBar().addPermanentWidget(b)
         self.s.net.run(updates.check, ok, lambda e: self.s.log(f"Update check skipped: {e}"))
 
-    def show_update_button(self, text: str, on_click, tip: str = ""):
-        if self.update_btn is None:
-            self.update_btn = button(text, "primary")
-            self.statusBar().addPermanentWidget(self.update_btn)
-        else:
-            self.update_btn.setText(text)
-            try:
-                self.update_btn.clicked.disconnect()
-            except (RuntimeError, TypeError):
-                pass
-        self.update_btn.setToolTip(tip)
-        self.update_btn.setEnabled(on_click is not None)
-        if on_click:
-            self.update_btn.clicked.connect(on_click)
-
-    def download_update(self, rel):
-        self.show_update_button(f"Downloading update v{rel.version}…", None)
+    def download_update(self):
+        rel = self.update_rel
+        self.update_error = ""
         prog = lambda done, total: self.upd_progress.emit(done, total)
-        self._upd_version = rel.version
-        if not getattr(self, "_upd_hooked", False):
-            self._upd_hooked = True
-            self.upd_progress.connect(lambda d, t: self.update_btn and self.update_btn.setText(
-                f"Downloading update v{self._upd_version}… {100 * d // t}%" if t else
-                f"Downloading update v{self._upd_version}… {d // (1024 * 1024)} MB"))
 
         def ok(path):
             self.update_path = path
             self.s.log(f"Update v{rel.version} downloaded and checked: {path}")
-            self.show_update_button(f"Restart to update to v{rel.version}", self.install_update_now,
-                                    f"What's new:\n{rel.notes}\n\nIf you don't restart now, the update installs "
-                                    "when you close Hatchling.")
+            if self.update_btn:
+                self.update_btn.setText(f"Update to v{rel.version} - ready")
+            self.update_ready.emit()
 
         def err(e):
+            self.update_error = str(e)
             self.s.log(f"Update download failed: {e}")
-            self.show_update_button(f"Update v{rel.version}: try again", lambda: self.download_update(rel),
-                                    f"The download didn't finish ({e}). Click to try again.")
+            if self.update_btn:
+                self.update_btn.setText(f"Update to v{rel.version} - try again")
+            self.update_ready.emit()
         self.s.net.run(lambda: updates.download(rel, prog), ok, err)
 
-    def install_update_now(self):
+    def _on_update_progress(self, done, total):
+        self.update_done = (done, total)
+        if self.update_btn and not self.update_path:
+            pct = f"{100 * done // total}%" if total else f"{done // (1024 * 1024)} MB"
+            self.update_btn.setText(f"Update to v{self.update_rel.version} ({pct})")
+
+    def open_update_window(self):
         if self.s.runner.busy:
             QMessageBox.information(self, "Hatchling", "Hatchling is still talking to the car. Try again when "
                                                        "it's finished.")
             return
+        if self.update_error and not self.update_path:
+            self.download_update()
+        UpdateDialog(self).exec()
+
+    def install_update_now(self) -> str:
+        """Starts the installer with its progress window and closes Hatchling. Returns an error or ''."""
         try:
-            updates.install(self.update_path, relaunch=True)
+            updates.install(self.update_path, relaunch=True, show_progress=True)
         except updates.UpdateError as e:
-            QMessageBox.warning(self, "Hatchling", f"The update couldn't start: {e}")
-            return
+            return str(e)
         self.s.log("Installing the update - Hatchling will reopen when it's done")
         self.update_path = ""   # don't start it a second time on close
-        self.close()
+        QTimer.singleShot(1200, self.close)
+        return ""
 
     def open_config(self, bus: str, addr: int, did: Optional[int] = None, byte: Optional[int] = None):
         self.go("Configuration")
@@ -5028,7 +5125,7 @@ class MainWindow(QMainWindow):
             self.s.elm.close()
         if getattr(self, "update_path", "") and library.settings().get("install_updates_on_close", True):
             try:   # downloaded but not installed yet: install quietly now, without reopening
-                updates.install(self.update_path, relaunch=False)
+                updates.install(self.update_path, relaunch=False, show_progress=False)
             except updates.UpdateError:
                 pass
         self.s.runner.pool.shutdown(wait=False, cancel_futures=True)

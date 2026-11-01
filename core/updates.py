@@ -151,11 +151,12 @@ def download(rel: Release, progress: Optional[Callable[[int, int], None]] = None
     return path
 
 
-def install(path: str, relaunch: bool = True):
+def install(path: str, relaunch: bool = True, show_progress: bool = True):
     """Starts the installer silently (Windows asks once for permission) and returns straight away -
     the caller should then close Hatchling so its files can be replaced. The installer reopens
     Hatchling when it's finished if relaunch is True."""
-    args = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /SP-"
+    # /SILENT shows only the installer's progress window (no questions); /VERYSILENT shows nothing
+    args = ("/SILENT" if show_progress else "/VERYSILENT") + " /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /SP-"
     if relaunch:
         args += " /RELAUNCH=1"
     log = os.path.join(download_dir(), "install-log.txt")
