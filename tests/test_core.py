@@ -131,5 +131,22 @@ except updates.UpdateError:
 
 check("wish list loads", len(library.wishlist()) >= 5)
 
+from core import vin as vinmod  # noqa: E402
+
+check("non-Ford VINs get a make", vinmod.decode("W0L0XEP68G4012345").make == "Vauxhall/Opel" and
+      not vinmod.decode("W0L0XEP68G4012345").ford_family)
+check("Mazda is Ford family without a factory file",
+      vinmod.decode("JMZBL14Z201234567").ford_family and not vinmod.decode("JMZBL14Z201234567").ford_factory)
+mz = ELM327(SimTransport(kind="mazda"))
+mz.initialise()
+check("Mazda module names", "SAS - Airbags" in {m.name for m in modules.scan(UDS(mz), HS, False, None, "Mazda")})
+other = ELM327(SimTransport(kind="other"))
+other.initialise()
+other.set_bus(OBD)
+og = GenericObd(other)
+og.connect()
+check("any car: engine codes", og.stored_dtcs() == ["P0300"])
+check("any car: misfire counts over generic OBD-II", len(misfire_counts(og.mode06)) == 4)
+
 print(f"\n{len(failures)} failure(s)" if failures else "\nall core tests passed")
 sys.exit(1 if failures else 0)

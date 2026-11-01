@@ -1,6 +1,12 @@
 Beta testing release - thanks for trying Hatchling.
 
-**Download `Hatchling-Setup-1.4.0.exe` below** and run it (it updates your current version in place). Windows may show "Windows protected your PC" because the installer isn't code-signed yet - click **More info**, then **Run anyway**. From 1.3.0 on, Hatchling updates itself.
+**Download `Hatchling-Setup-1.5.0.exe` below** and run it (it updates your current version in place). Windows may show "Windows protected your PC" because the installer isn't code-signed yet - click **More info**, then **Run anyway**. From 1.3.0 on, Hatchling updates itself.
+
+What's new in 1.5.0
+
+- **Any car mode** - plug Hatchling into any petrol car from 2001 or diesel from 2004 (Vauxhall, VW, Toyota and the rest). It reads the VIN, names the make, and gives you the standard tools every car has: engine fault codes with their freeze frame, live data, gauges, MOT check, misfire counts, trips and the performance timer. The Ford-only pages (features, module settings, service jobs) step out of the way.
+- **Mazda** - Mazdas get the full treatment like Fords: module scan with Mazda's own module names, fault codes from every module, module settings, backups and learning features. Mazda doesn't publish factory settings by VIN, so there's no factory file - Hatchling's automatic full backup before your first change is the safety net instead.
+- Two more simulators to try it out: a 2012 Mazda3 and a 2016 Vauxhall.
 
 What's new in 1.4.0
 

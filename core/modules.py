@@ -30,7 +30,14 @@ KNOWN = {  # addresses tried by a quick scan on each bus
 KNOWN[HS2] = dict(KNOWN[MS])
 
 
-def name_for(bus: str, addr: int) -> str:
+# Mazda's own names where they differ (same addresses on the Ford-derived Mazdas)
+MAZDA_NAMES = {0x760: "DSC/ABS - Brakes", 0x737: "SAS - Airbags", 0x730: "EPS - Steering",
+               0x720: "IC - Instrument cluster", 0x727: "AUDIO - Audio", 0x733: "CLIMATE - Climate"}
+
+
+def name_for(bus: str, addr: int, make: str = "") -> str:
+    if make == "Mazda" and addr in MAZDA_NAMES:
+        return MAZDA_NAMES[addr]
     return NAMES.get(addr, f"Module {addr:03X}")
 
 
@@ -72,7 +79,7 @@ def identify(uds: UDS, m: Module):
 
 
 def scan(uds: UDS, bus: str, full: bool = False,
-         progress: Optional[Callable[[int, int], None]] = None) -> List[Module]:
+         progress: Optional[Callable[[int, int], None]] = None, make: str = "") -> List[Module]:
     """Ping each address with TesterPresent. Must already be on `bus`."""
     elm = uds.elm
     addrs = list(range(0x700, 0x7F0)) if full else sorted(KNOWN.get(bus, NAMES))
@@ -84,7 +91,7 @@ def scan(uds: UDS, bus: str, full: bool = False,
             if progress:
                 progress(i + 1, len(addrs))
             if uds.tester_present(a):
-                m = Module(a, bus, name_for(bus, a))
+                m = Module(a, bus, name_for(bus, a, make))
                 found.append(m)
     finally:
         elm.set_timeout(400)

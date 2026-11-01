@@ -37,6 +37,10 @@ from ui.theme import ACCENT, AMBER, CHANGED, DANGER, FAINT, INK, LINE, LINE_STRO
 
 SIM = "Simulator - 2015 Fiesta (CAN)"
 SIM_OLD = "Simulator - 2003 Focus (OBD only)"
+SIM_MAZDA = "Simulator - 2012 Mazda3 (CAN)"
+SIM_ANY = "Simulator - 2016 Vauxhall (any car)"
+SIM_KINDS = {SIM: (False, "ford"), SIM_OLD: (True, "ford"), SIM_MAZDA: (False, "mazda"), SIM_ANY: (False, "other")}
+FORD_ONLY_PAGES = ("Features", "Library", "Service", "Configuration")
 WIFI = "Wi-Fi adapter"
 AUTO = "Auto-detect from VIN"
 
@@ -192,6 +196,24 @@ class Session(QObject):
     def obd_only(self) -> bool:
         return bool(self.profile and self.profile.obd_only)
 
+    @property
+    def make(self) -> str:
+        return self.vin_info.make if self.vin_info else ""
+
+    @property
+    def any_car(self) -> bool:
+        """Connected to a car outside the Ford family: only the generic OBD-II tools apply."""
+        if not self.connected:
+            return False
+        if self.vin_info and self.vin_info.make != "Unknown make":
+            return not self.vin_info.ford_family
+        return bool(self.profile and self.profile.make == "Any")
+
+    @property
+    def factory_available(self) -> bool:
+        """Ford publishes factory settings for this car (or we don't know the make yet)."""
+        return not self.vin_info or self.vin_info.ford_factory or self.vin_info.make == "Unknown make"
+
     def scan_buses(self) -> List[str]:
         return self.profile.can_buses if self.profile else [HS, MS]
 
@@ -270,7 +292,7 @@ class Session(QObject):
     def module_for(self, bus: str, addr: int) -> Module:
         key = f"{bus}:{addr:03X}"
         if key not in self.modules:
-            self.modules[key] = Module(addr, bus, modules.name_for(bus, addr))
+            self.modules[key] = Module(addr, bus, modules.name_for(bus, addr, self.make))
         return self.modules[key]
 
 
@@ -396,6 +418,12 @@ class HomePage(Page):
         # everyday jobs
         grid = QGridLayout()
         grid.setSpacing(10)
+        self.job_btns: Dict[str, QPushButton] = {}
+        self.mode_note = QLabel("")
+        self.mode_note.setWordWrap(True)
+        self.mode_note.setObjectName("subtle")
+        self.mode_note.hide()
+        self.root.addWidget(self.mode_note)
         jobs = (("Check for faults", "Read fault codes from every module, see what they mean, clear them.", "codes"),
                 ("Turn features on or off", "Cruise control, lights and more - with a check that the parts are fitted.",
                  "Features"),
@@ -408,6 +436,7 @@ class HomePage(Page):
             b.setMinimumHeight(70)
             b.clicked.connect(lambda _, k=key: self.job(k))
             grid.addWidget(b, i // 2, i % 2)
+            self.job_btns[key] = b
         self.root.addLayout(grid)
 
         # first-time steps (a real sequence, so numbered)
@@ -506,7 +535,17 @@ class HomePage(Page):
         self.figs["codes"].setStyleSheet(f"color: {DANGER if c else INK};")
         f = self.counts["features"]
         self.figs["features"].setText("-" if f is None else str(f))
-        done = [True, s.connected, bool(s.factory), bool(s.modules)]
+        anyc = s.any_car
+        self.mode_note.setVisible(anyc)
+        if anyc:
+            self.mode_note.setText(f"<b>Any car mode</b> - {html.escape(s.make or 'this car')} isn't a Ford-family car, "
+                                   "so Hatchling uses the standard OBD-II tools every car has: fault codes, live data, "
+                                   "gauges, MOT check, misfire counts and trips. Switching features on and off is for "
+                                   "Ford, Lincoln, Mercury and Mazda.")
+        for key in ("Features", "Library"):
+            if key in self.job_btns:
+                self.job_btns[key].setVisible(not anyc)
+        done = [True, s.connected, bool(s.factory) or (s.connected and not s.factory_available), bool(s.modules)]
         for (lab, t), d, n in zip(self.step_labels, done, range(1, 5)):
             lab.setText(f"<span style='color:{OK}'>✓</span>&nbsp; <s>{html.escape(t)}</s>" if d
                         else f"{n}.&nbsp; {html.escape(t)}")
@@ -577,8 +616,8 @@ class ConnectPage(Page):
         for dev, label in ports:
             self.port.addItem(label, dev)
         self.port.addItem("Wi-Fi adapter (join its Wi-Fi network first)", WIFI)
-        self.port.addItem(SIM, SIM)
-        self.port.addItem(SIM_OLD, SIM_OLD)
+        for name in SIM_KINDS:
+            self.port.addItem(name, name)
         if not ports and hasattr(self, "info") and not self.s.connected:
             self.info.setText(
                 "No adapter found. Plug it in and press Refresh.<br><br>If it still doesn't appear, Windows "
@@ -640,8 +679,8 @@ class ConnectPage(Page):
             cfg["wifi_adapter"] = addr.strip()
             library.save_settings(cfg)
             port = "tcp://" + addr.strip().removeprefix("tcp://")
-        sim = port in (SIM, SIM_OLD)
-        legacy = port == SIM_OLD
+        sim = port in SIM_KINDS
+        legacy, sim_kind = SIM_KINDS.get(port, (False, "ford"))
         baud_choice = self.baud.currentText()
         remembered = library.settings().get("baud_by_port", {}).get(port)
         trace = self.trace.isChecked()
@@ -656,7 +695,7 @@ class ConnectPage(Page):
                 baud = find_baud(port, remembered, log=self.s.log)
             else:
                 baud = int(baud_choice)
-            t = SimTransport(legacy=legacy) if sim else open_transport(port, baud)
+            t = SimTransport(legacy=legacy, kind=sim_kind) if sim else open_transport(port, baud)
             elm = ELM327(t, log=self.s.log)
             elm.trace = trace
             try:
@@ -701,7 +740,7 @@ class ConnectPage(Page):
             s.vin_info = vin.decode(vin_txt)
             s.voltage = v
             s.factory = factory.load(vin_txt) if vin_txt else None
-            if sim and not legacy and not s.factory:
+            if sim and not legacy and sim_kind == "ford" and not s.factory:
                 from core.sim import sample_factory
                 s.factory = sample_factory()
                 s.log("Simulator: sample factory file loaded (auto headlights were off when it was built)")
@@ -820,7 +859,7 @@ class ModulesPage(Page):
 
         def job(bus):
             def run():
-                found = modules.scan(self.s.uds, bus, full, prog)
+                found = modules.scan(self.s.uds, bus, full, prog, self.s.make)
                 # read the configuration of modules that features use while we're on this bus
                 blocks = {}
                 for m in found:
@@ -903,6 +942,18 @@ class ModulesPage(Page):
             return
 
     def show_factory(self):
+        avail = self.s.factory_available
+        for w in (self.get_btn, self.import_btn, self.diff_btn, self.donor_btn, self.share_fac_btn):
+            w.setVisible(avail)
+        if not avail:
+            mk = self.s.make
+            self.factory_label.setText(
+                f"<span style='color:{MUTED}'>●</span> {html.escape(mk)} doesn't publish factory settings by VIN, so "
+                "there's no factory file for this car. Hatchling backs up every module before your first change "
+                "instead." if self.s.vin_info and self.s.vin_info.ford_family else
+                f"<span style='color:{MUTED}'>●</span> Any car mode: the engine computer is read with standard "
+                "OBD-II. Fault codes, live data, MOT check, misfires and trips all work.")
+            return
         f = self.s.factory
         if f:
             self.factory_label.setText(f"<span style='color:{OK}'>●</span> Factory As-Built loaded for "
@@ -1229,10 +1280,16 @@ class DtcPage(Page):
     def misfire_check(self):
         if not self.need_connection():
             return
-        if self.s.obd_only:
-            MisfireDialog(self, []).exec()
-            return
         from core.obd import misfire_counts
+        if self.s.obd_only:
+            if not self.s.obd.is_can:
+                MisfireDialog(self, []).exec()
+                return
+            self.s.ensure_bus(OBD, lambda: self.s.runner.run(
+                lambda: misfire_counts(self.s.obd.mode06),
+                lambda counts: MisfireDialog(self, counts).exec(),
+                lambda e: MisfireDialog(self, []).exec()))
+            return
         self.s.ensure_bus(HS, lambda: self.s.runner.run(
             lambda: misfire_counts(lambda mid: self.s.uds.mode06(mid)),
             lambda counts: MisfireDialog(self, counts).exec(),
@@ -5502,7 +5559,11 @@ class SetupGuide(QDialog):
                                   "adapter's switch.")
                 self.action.setText("Scan the car")
         elif i == 3:
-            if self.s.factory:
+            if self.s.connected and not self.s.factory_available:
+                self.body.setText(f"{html.escape(self.s.make or 'This car')} doesn't publish factory settings by VIN, "
+                                  "so there's nothing to download - the backup in the next step is your safety net.")
+                self.action.setText("Next")
+            elif self.s.factory:
                 self.body.setText(f"<span style='color:{OK}'>Factory file loaded.</span> You can always put the car "
                                   "back how it left the factory.")
                 self.action.setText("Next")
@@ -5512,7 +5573,11 @@ class SetupGuide(QDialog):
                                   "Hatchling picks it up from your Downloads folder by itself.")
                 self.action.setText("Get my factory file")
         elif i == 4:
-            if self.s.vin in self.s.full_backup_done:
+            if self.s.obd_only:
+                self.body.setText("Older and non-Ford cars are read with standard OBD-II, which doesn't change any "
+                                  "settings - so there's nothing to back up. All set.")
+                self.action.setText("Finish")
+            elif self.s.vin in self.s.full_backup_done:
                 self.body.setText(f"<span style='color:{OK}'>Backed up.</span> All set - have a look round.")
                 self.action.setText("Finish")
             else:
@@ -5545,12 +5610,12 @@ class SetupGuide(QDialog):
                 self.body.setText("Scanning...")
                 pages["Modules"].scan(False)
         elif i == 3:
-            if s.factory:
+            if s.factory or not s.factory_available:
                 self.goto(4)
             else:
                 pages["Modules"].get_factory_file()
         elif i == 4:
-            if s.vin in s.full_backup_done:
+            if s.vin in s.full_backup_done or s.obd_only:
                 self.finish()
             else:
                 self.action.setEnabled(False)
@@ -5938,10 +6003,17 @@ class MainWindow(QMainWindow):
         self.pages["Configuration"].open_module(bus, addr, did, byte)
 
     def on_conn(self, ok):
+        mode = " - any car mode" if ok and self.s.any_car else ""
         self.conn.setText(f"<span style='color:{OK if ok else MUTED}'>●</span> "
-                          f"{'Connected' + (' to the simulator' if self.s.simulated else '') if ok else 'Not connected'}")
+                          f"{'Connected' + (' to the simulator' if self.s.simulated else '') + mode if ok else 'Not connected'}")
         if not ok:
             self.bus.setText("")
+        anyc = self.s.any_car
+        for key in FORD_ONLY_PAGES:   # nothing on these pages applies to non-Ford cars
+            self.nav.item(self.rows[key]).setHidden(anyc)
+        cur = self.nav.currentItem()
+        if anyc and cur and cur.data(Qt.UserRole) in FORD_ONLY_PAGES:
+            self.go("Home")
 
     def closeEvent(self, e):
         if self.s.elm:
