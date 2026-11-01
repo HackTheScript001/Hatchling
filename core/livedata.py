@@ -116,3 +116,28 @@ class Recorder:
 
     def close(self):
         self.f.close()
+
+
+def load_recording(path: str, max_rows: int = 200_000) -> tuple:
+    """Reads a recording made by Recorder: (times, {column name: [value or None]})."""
+    with open(path, newline="", encoding="utf-8") as f:
+        rows = csv.reader(f)
+        head = next(rows, None)
+        if not head or head[0] != "time_s":
+            raise ValueError("that isn't a Hatchling recording")
+        names = head[1:]
+        times: List[float] = []
+        cols: Dict[str, List[Optional[float]]] = {n: [] for n in names}
+        for i, row in enumerate(rows):
+            if i >= max_rows:
+                break
+            try:
+                times.append(float(row[0]))
+            except (ValueError, IndexError):
+                continue
+            for n, v in zip(names, row[1:] + [""] * (len(names) - len(row) + 1)):
+                try:
+                    cols[n].append(float(v) if v != "" else None)
+                except ValueError:
+                    cols[n].append(None)
+    return times, cols

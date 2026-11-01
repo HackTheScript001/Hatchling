@@ -1,0 +1,25 @@
+name: I'll look for a feature
+description: Claim a feature from the wish list and share progress while you find its settings on your car
+title: "Looking for: "
+labels: ["finding-feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping! Use **Learn a feature** in Hatchling (switch the feature on or off another way, e.g. in the
+        car's menu, and Hatchling spots which bits changed), or **Changes since factory** if your car already has it.
+        Post what you find here, then share the finished feature from the Features page.
+  - type: input
+    id: wish
+    attributes:
+      label: Wish list item
+    validations:
+      required: true
+  - type: input
+    id: car
+    attributes:
+      label: Car
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes / progress

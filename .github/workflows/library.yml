@@ -2,6 +2,7 @@
 #  - "Share a feature" issue + a maintainer adds the label "approved"  -> feature added to library/
 #  - "Share a factory file" issue + label "approved"                     -> added to factory-data/ and
 #    compared with the other cars; proposed features appear in factory-data/<make>/<model>/proposed/
+#  - "What fixed a fault code" issue + label "approved"               -> tip added to library/code-tips.json
 #  - "Works on my car" issue                                           -> confirmation counted
 # Issue text is untrusted: it's passed through an environment variable into a file and only
 # ever read as data by tools/library_tool.py - never pasted into a shell command.
@@ -105,6 +106,50 @@ jobs:
             gh issue close "$ISSUE" --repo "$GITHUB_REPOSITORY"
           else
             gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "Couldn't add this file: $(cat "$RUNNER_TEMP/result.txt" 2>/dev/null || echo 'see the workflow log')"
+            gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label approved
+          fi
+
+  add-code-tip:
+    if: >-
+      github.event.action == 'labeled' && github.event.label.name == 'approved' &&
+      contains(github.event.issue.labels.*.name, 'code-fix')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Add tip
+        id: add
+        env:
+          BODY: ${{ github.event.issue.body }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          printf '%s' "$BODY" > "$RUNNER_TEMP/issue.md"
+          set +e
+          python tools/library_tool.py tip-add "$RUNNER_TEMP/issue.md" "$ISSUE" > "$RUNNER_TEMP/result.txt"
+          code=$?
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          cat "$RUNNER_TEMP/result.txt"
+      - name: Commit
+        if: steps.add.outputs.code == '0'
+        run: |
+          git config user.name "hatchling-library[bot]"
+          git config user.email "hatchling-library@users.noreply.github.com"
+          git add library/code-tips.json
+          git commit -m "Fault code tips: add #${{ github.event.issue.number }}"
+          git pull --rebase && git push
+      - name: Reply
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.issue.number }}
+          CODE: ${{ steps.add.outputs.code }}
+        run: |
+          if [ "$CODE" = "0" ]; then
+            gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "Thanks - this tip now shows in Hatchling next to the code. $(cat "$RUNNER_TEMP/result.txt")"
+            gh issue close "$ISSUE" --repo "$GITHUB_REPOSITORY"
+          else
+            gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "Couldn't add this tip: $(cat "$RUNNER_TEMP/result.txt" 2>/dev/null || echo 'see the workflow log')"
             gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label approved
           fi
 

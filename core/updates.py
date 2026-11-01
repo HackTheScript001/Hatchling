@@ -6,22 +6,41 @@ except a normal request for the public release page.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import sys
+import tempfile
 import urllib.request
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 from .paths import user_dir
 from .version import UPDATE_REPO, VERSION
 
 
+GITHUB_HOSTS = ("https://github.com/", "https://objects.githubusercontent.com/",
+                "https://release-assets.githubusercontent.com/")
+MAX_INSTALLER = 400 * 1024 * 1024
+
+
+class UpdateError(Exception):
+    pass
+
+
 @dataclass
 class Release:
     version: str
-    url: str
+    url: str           # installer download (or the release page if there's no installer)
     notes: str
+    sha256: str = ""   # from the release asset's digest, or the .sha256 file published next to it
+    size: int = 0
+    page: str = ""
+
+    @property
+    def installer(self) -> bool:
+        return self.url.lower().endswith(".exe")
 
 
 def parse_version(v: str) -> Tuple[int, ...]:
@@ -53,6 +72,111 @@ def check(timeout: float = 6.0) -> Optional[Release]:
     tag = data.get("tag_name", "")
     if not is_newer(tag):
         return None
-    installer = next((a["browser_download_url"] for a in data.get("assets", [])
-                      if a.get("name", "").lower().endswith(".exe")), data.get("html_url", ""))
-    return Release(tag.lstrip("v"), installer, (data.get("body") or "").strip()[:600])
+    assets = [a for a in data.get("assets", []) if isinstance(a, dict)]
+    exe = next((a for a in assets if a.get("name", "").lower().endswith(".exe")), None)
+    page = data.get("html_url", "")
+    if not exe:
+        return Release(tag.lstrip("v"), page, (data.get("body") or "").strip()[:600], page=page)
+    sha = ""
+    digest = str(exe.get("digest") or "")
+    if digest.startswith("sha256:"):
+        sha = digest[7:].lower()
+    if not sha:
+        side = next((a for a in assets if a.get("name", "").lower() == exe["name"].lower() + ".sha256"), None)
+        if side:
+            try:
+                req = urllib.request.Request(side["browser_download_url"], headers={"User-Agent": "Hatchling"})
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    sha = r.read(500).decode("ascii", "ignore").split()[0].lower()
+            except (OSError, IndexError):
+                sha = ""
+    return Release(tag.lstrip("v"), exe["browser_download_url"], (data.get("body") or "").strip()[:600],
+                   sha if re.fullmatch(r"[0-9a-f]{64}", sha) else "", int(exe.get("size") or 0), page)
+
+
+# ---- downloading and installing in the app ------------------------------------------
+def download_dir() -> str:
+    return os.path.join(tempfile.gettempdir(), "Hatchling-update")
+
+
+def downloaded_path(rel: Release) -> str:
+    return os.path.join(download_dir(), f"Hatchling-Setup-{re.sub(r'[^0-9A-Za-z.]', '', rel.version)}.exe")
+
+
+def _sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def download(rel: Release, progress: Optional[Callable[[int, int], None]] = None, timeout: float = 30.0) -> str:
+    """Downloads the installer next to the other update files and checks it. Only GitHub downloads are
+    accepted, and the file must match the checksum GitHub publishes for it. Returns the file path."""
+    if not rel.installer:
+        raise UpdateError("this release has no installer to download")
+    if not rel.url.startswith(GITHUB_HOSTS):
+        raise UpdateError("the installer isn't on GitHub, so it wasn't downloaded")
+    if not rel.sha256:
+        raise UpdateError("the release has no checksum, so it can't be checked - download it from the website")
+    path = downloaded_path(rel)
+    if os.path.isfile(path) and _sha256(path) == rel.sha256:
+        return path   # already downloaded earlier
+    os.makedirs(download_dir(), exist_ok=True)
+    part = path + ".part"
+    req = urllib.request.Request(rel.url, headers={"User-Agent": "Hatchling", "Accept": "application/octet-stream"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r, open(part, "wb") as f:
+            total = int(r.headers.get("Content-Length") or rel.size or 0)
+            if total > MAX_INSTALLER:
+                raise UpdateError("the download is unexpectedly large")
+            done = 0
+            while True:
+                chunk = r.read(256 * 1024)
+                if not chunk:
+                    break
+                done += len(chunk)
+                if done > MAX_INSTALLER:
+                    raise UpdateError("the download is unexpectedly large")
+                f.write(chunk)
+                if progress:
+                    progress(done, total)
+    except OSError as e:
+        raise UpdateError(f"download failed ({getattr(e, 'reason', e)})")
+    if _sha256(part) != rel.sha256:
+        os.remove(part)
+        raise UpdateError("the download didn't match its checksum, so it was deleted")
+    os.replace(part, path)
+    return path
+
+
+def install(path: str, relaunch: bool = True):
+    """Starts the installer silently (Windows asks once for permission) and returns straight away -
+    the caller should then close Hatchling so its files can be replaced. The installer reopens
+    Hatchling when it's finished if relaunch is True."""
+    args = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /SP-"
+    if relaunch:
+        args += " /RELAUNCH=1"
+    log = os.path.join(download_dir(), "install-log.txt")
+    args += f' /LOG="{log}"'
+    if sys.platform != "win32":
+        raise UpdateError("updates install on Windows only")
+    try:
+        os.startfile(path, "open", args)   # ShellExecute: shows the Windows permission prompt
+    except OSError as e:
+        raise UpdateError(f"the installer couldn't start ({e})")
+
+
+def clean_old(keep: str = ""):
+    """Removes earlier downloads once Hatchling is running the newer version."""
+    d = download_dir()
+    if not os.path.isdir(d):
+        return
+    for fn in os.listdir(d):
+        p = os.path.join(d, fn)
+        if fn.lower().endswith((".exe", ".part")) and p != keep:
+            try:
+                os.remove(p)
+            except OSError:
+                pass

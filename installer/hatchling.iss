@@ -64,6 +64,8 @@ Name: "{userdocs}\Hatchling"; Flags: uninsneveruninstall
 
 [Run]
 Filename: "{app}\{#MyAppExe}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
+; In-app updates run this installer silently with /RELAUNCH=1 so Hatchling reopens by itself afterwards
+Filename: "{app}\{#MyAppExe}"; Flags: nowait runasoriginaluser; Check: RelaunchAfterUpdate
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
@@ -75,6 +77,11 @@ var
 procedure InitializeWizard;
 begin
   DownloadPage := CreateDownloadPage('Adapter drivers', 'Downloading USB adapter drivers...', nil);
+end;
+
+function RelaunchAfterUpdate: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:RELAUNCH|0}') = '1');
 end;
 
 function HaveUrls: Boolean;

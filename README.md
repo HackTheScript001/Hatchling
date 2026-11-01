@@ -95,7 +95,7 @@ only reaches the engine computer on those cars.
 
 - Ignition ON, engine off, **battery charger connected** for any writes.
 - When the app asks, flip the adapter switch. It only asks when the switch position actually changes (MS-CAN and HS-CAN on 3/11 share a position).
-- Baud: most switched ELM327 USB adapters use 38400. If Connect fails, try 115200.
+- Baud: leave it on Automatic - Hatchling finds the speed and remembers it. Wi-Fi adapters: join the adapter's Wi-Fi network, then pick "Wi-Fi adapter".
 - Back up every module (Configuration → Read → Save backup) before changing anything. Backups go to `Documents\Hatchling\backups\<VIN>\`.
 
 ## Features page

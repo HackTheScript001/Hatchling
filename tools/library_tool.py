@@ -6,6 +6,7 @@
   python tools/library_tool.py factory-add <issue-body-file> <issue-number> approved "Share a factory file" issue
   python tools/library_tool.py suggest                                     compare factory files, propose features
   python tools/library_tool.py check                                       validate every feature file
+  python tools/library_tool.py tip-add  <issue-body-file> <issue-number>   approved "What fixed a fault code" issue
 
 Issue bodies are untrusted input: everything is validated, only known fields are kept,
 and nothing in them is ever executed. Feature files never contain a VIN.
@@ -342,6 +343,32 @@ def factory_add(body: str, issue: int) -> Tuple[str, str]:
     return slug(d["model"]), path
 
 
+CODE_RE = re.compile(r"^[PCBU][0-3][0-9A-F]{3}$")
+TIPS = os.path.join(LIB, "code-tips.json")
+URL_RE = re.compile(r"https?://\S+")
+
+
+def tip_add(body: str, issue: int) -> Tuple[str, int]:
+    f = issue_fields(body)
+    code = f.get("fault code", "").strip().upper().split("-")[0]
+    if not CODE_RE.match(code):
+        raise Invalid("the fault code should look like P0420")
+    text = f.get("what fixed it", "").strip()
+    if VIN_RE.search(text.upper()):
+        raise Invalid("the tip contains a VIN - remove it and try again")
+    text = URL_RE.sub("", re.sub(r"\s+", " ", text)).strip()[:600]
+    if len(text) < 8:
+        raise Invalid("please say what fixed it")
+    car = re.sub(r"[^A-Za-z0-9 .\-+/()]", "", f.get("car", ""))[:80].strip()
+    data = _load_json(TIPS, {"schema": 1, "tips": {}})
+    tips = data.setdefault("tips", {}).setdefault(code, [])
+    tips[:] = [t for t in tips if t.get("issue") != int(issue)]
+    tips.append({"text": text, "car": car, "issue": int(issue)})
+    data["generated"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    _write_json(TIPS, data)
+    return code, len(tips)
+
+
 def _blocks(lines: Dict[str, str]) -> Dict[Tuple[int, int], bytes]:
     """(module, DID) -> bytes, dropping the trailing checksum byte when most lines carry one."""
     parsed = {}
@@ -438,6 +465,10 @@ def main(argv):
             with open(argv[1], encoding="utf-8") as fh:
                 model, path = factory_add(fh.read(), int(argv[2]))
             print(f"added factory file for {model} -> {os.path.relpath(path, ROOT)}")
+        elif cmd == "tip-add" and len(argv) == 3:
+            with open(argv[1], encoding="utf-8") as fh:
+                code, n = tip_add(fh.read(), int(argv[2]))
+            print(f"tip added for {code} ({n} tip(s) for this code)")
         elif cmd == "suggest":
             res = suggest()
             for k, v in res.items():

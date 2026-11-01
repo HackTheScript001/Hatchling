@@ -1,0 +1,71 @@
+{
+  "schema": 1,
+  "generated": "2026-11-01T00:00:00Z",
+  "about": "Features owners want found. Each needs its bit values learned on a real car (Learn a feature, Changes since factory or comparing factory files) before it can go in the library. Status: wanted, being found, in library.",
+  "items": [
+    {
+      "id": "fiesta-mk7-global-windows",
+      "name": "Open/close all windows from the key",
+      "models": "Fiesta Mk7",
+      "description": "Hold unlock (or lock) on the key to open (or close) every window.",
+      "modules_hint": "BCM",
+      "status": "wanted"
+    },
+    {
+      "id": "fiesta-mk7-needle-sweep",
+      "name": "Dial needle sweep at start-up",
+      "models": "Fiesta Mk7",
+      "description": "The speedo and rev counter needles sweep to the end and back when the ignition comes on.",
+      "modules_hint": "IPC (instrument cluster)",
+      "status": "wanted"
+    },
+    {
+      "id": "fiesta-mk7-double-horn",
+      "name": "Horn chirp when locking twice",
+      "models": "Fiesta Mk7",
+      "description": "A short horn sound when you press lock twice (on, off or always).",
+      "modules_hint": "BCM",
+      "status": "wanted"
+    },
+    {
+      "id": "fiesta-mk7-fog-cornering",
+      "name": "Fog lights as cornering lights",
+      "models": "Fiesta Mk7",
+      "description": "The front fog light on the side you're turning lights up at low speed.",
+      "modules_hint": "BCM",
+      "status": "wanted"
+    },
+    {
+      "id": "fiesta-mk7-cruise",
+      "name": "Cruise control (with switches fitted)",
+      "models": "Fiesta Mk7",
+      "description": "Turns on cruise control after fitting the steering wheel switches.",
+      "modules_hint": "PCM, BCM, IPC",
+      "status": "being found"
+    },
+    {
+      "id": "fiesta-mk7-drl-sidelights",
+      "name": "Daytime running lights with sidelights",
+      "models": "Fiesta Mk7",
+      "description": "Keeps the daytime lights on (dimmed) when the sidelights are on.",
+      "modules_hint": "BCM",
+      "status": "wanted"
+    },
+    {
+      "id": "fiesta-mk7-mirror-fold",
+      "name": "Fold mirrors when locking",
+      "models": "Fiesta Mk7",
+      "description": "Power-folding mirrors fold in when you lock and out when you unlock (needs power-fold mirrors fitted).",
+      "modules_hint": "BCM, door modules",
+      "status": "wanted"
+    },
+    {
+      "id": "fiesta-mk7-auto-lock",
+      "name": "Lock the doors when driving off",
+      "models": "Fiesta Mk7",
+      "description": "Doors lock themselves once the car is moving.",
+      "modules_hint": "BCM",
+      "status": "wanted"
+    }
+  ]
+}

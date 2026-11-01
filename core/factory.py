@@ -183,6 +183,19 @@ def load(vin: str) -> Optional[FactoryData]:
     return FactoryData(d.get("vin", vin), lines, d.get("source", ""), d.get("imported", ""))
 
 
+def stored() -> List[Tuple[str, str]]:
+    """(VIN, imported) for every factory file saved on this computer."""
+    out = []
+    if not os.path.isdir(FACTORY_DIR):
+        return out
+    for fn in sorted(os.listdir(FACTORY_DIR)):
+        if fn.endswith(".json") and VIN_RE.fullmatch(fn[:-5]):
+            d = load(fn[:-5])
+            if d:
+                out.append((d.vin, d.imported))
+    return out
+
+
 # ---- comparing with the car -----------------------------------------------------
 def align(factory: Blocks, car: Blocks) -> Blocks:
     """Fits factory blocks to the lengths the module actually reports (drops a trailing

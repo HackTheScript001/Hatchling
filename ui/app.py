@@ -12,7 +12,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Dict, List, Optional, Tuple
 
-from PySide6.QtCore import QObject, QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QObject, QPointF, QRectF, QSize, QSizeF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QIcon, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame, QGridLayout,
@@ -21,11 +21,12 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget,
 )
 
-from core import (asbuilt, dtc, factory, features, finder, history, library, online, livedata, modules, paths, report, services, updates,
-                  vehicles, vin)
+from core import (asbuilt, dtc, factory, features, finder, history, library, online, livedata, modules, paths, report,
+                  safety, services, updates, vehicles, vin)
 from core.version import VERSION
 from core.buses import BUSES, OBD
-from core.elm import DRIVER_PAGES, ELM327, HS, MS, ElmError, SerialTransport, describe_ports, find_baud
+from core.elm import (DRIVER_PAGES, ELM327, HS, MS, WIFI_DEFAULT, ElmError, describe_ports, find_baud, open_transport,
+                      parse_wifi)
 from core.obd import GenericObd
 from core.modules import Module
 from core.pids import PIDS
@@ -36,6 +37,7 @@ from ui.theme import ACCENT, AMBER, CHANGED, DANGER, FAINT, INK, LINE, LINE_STRO
 
 SIM = "Simulator - 2015 Fiesta (CAN)"
 SIM_OLD = "Simulator - 2003 Focus (OBD only)"
+WIFI = "Wi-Fi adapter"
 AUTO = "Auto-detect from VIN"
 
 
@@ -99,7 +101,8 @@ class Session(QObject):
     def __init__(self):
         super().__init__()
         Session.instance = self
-        self.runner = Runner()
+        self.runner = Runner()   # the adapter - one job at a time
+        self.net = Runner()      # downloads and other internet jobs, so they never hold up the car
         self.elm: Optional[ELM327] = None
         self.uds: Optional[UDS] = None
         self.simulated = False
@@ -121,6 +124,9 @@ class Session(QObject):
         self.go: Callable[[str], None] = lambda key: None              # set by MainWindow
         self.open_learn: Callable[..., None] = lambda name="": None    # set by MainWindow
         self.open_factory_diff: Callable[[], None] = lambda: None      # set by MainWindow
+        self.full_backup_done: set = set()   # VINs backed up in full during this visit
+        self.feature_states: dict = {}       # from the last module scan
+        self.features_detected.connect(lambda d: setattr(self, "feature_states", d.get("states", {})))
         try:
             self.history: Optional[history.History] = history.History()
         except Exception as e:  # history is a nice-to-have, never block the app
@@ -200,12 +206,66 @@ class Session(QObject):
         """Reopens the COM port after pause_adapter (runs on the worker thread)."""
         if not self.paused or not self.elm:
             return
-        self.elm.t = SerialTransport(self.port, self.baud)
+        self.elm.t = open_transport(self.port, self.baud)
         self.elm.bus = None
         self.elm._target = None
         self.elm.initialise()
         self.paused = False
         self.log("Adapter reconnected")
+
+    # ---- safety before any change to the car ------------------------------------
+    def before_write(self, then: Callable[[], None]):
+        """Battery check, then a full backup of every module (first change of the visit only), then then()."""
+        if not self.connected:
+            return
+
+        def checked(volts):
+            self.voltage = volts if volts is not None else self.voltage
+            state, msg = safety.battery_state(volts)
+            self.log(f"Battery check before writing: {f'{volts:.1f} V' if volts else 'not read'} ({state})")
+            if state == safety.TOO_LOW:
+                QMessageBox.critical(self.window, "Battery too low", msg)
+                return
+            if state in (safety.LOW, safety.UNKNOWN):
+                box = QMessageBox(QMessageBox.Warning, "Check the battery", msg, parent=self.window)
+                go = box.addButton("Continue anyway", QMessageBox.AcceptRole)
+                box.addButton("Stop - I'll connect a charger", QMessageBox.RejectRole)
+                box.exec()
+                if box.clickedButton() is not go:
+                    return
+            if self.vin in self.full_backup_done or not self.modules:
+                then()
+            else:
+                self.full_backup(lambda path: then())
+        self.runner.run(lambda: self.elm.voltage(), checked, lambda e: checked(None))
+
+    def full_backup(self, then: Callable[[str], None] = lambda path: None, note: str = "automatic, before the "
+                                                                                       "first change of the visit"):
+        """Reads every scanned module's settings into one backup file."""
+        mods = [m for m in self.modules.values() if m.bus in BUSES and BUSES[m.bus].protocol == "can"]
+        seen, chosen = set(), []
+        for m in sorted(mods, key=lambda m: m.bus != (self.elm.bus if self.elm else "")):
+            if m.addr not in seen:     # a module on both buses only needs backing up once
+                seen.add(m.addr)
+                chosen.append(m)
+        buses = {m.bus for m in chosen}
+        if not chosen:
+            then("")
+            return
+        needs_flip = not (self.simulated or self.auto_switch) and len({BUSES[b].switch for b in buses}) > 1
+        self.log(f"Backing up all {len(chosen)} module(s) before the first change"
+                 + (" - you'll be asked to flip the adapter switch" if needs_flip else ""))
+        got: List[Tuple[Module, asbuilt.Blocks]] = []
+        jobs = {b: (lambda b=b: safety.read_modules(self.uds, [m for m in chosen if m.bus == b], self.log))
+                for b in buses}
+
+        def done():
+            path = safety.save_full(self.vin, got, note)
+            self.full_backup_done.add(self.vin)
+            self.log(f"Full backup saved ({len(got)} of {len(chosen)} module(s)): {path}")
+            self.record(history.NOTE, f"Full backup of {len(got)} module(s)", {"backup": path})
+            then(path)
+        self.per_bus(jobs, lambda b, r: got.extend(r), done)
 
     def module_for(self, bus: str, addr: int) -> Module:
         key = f"{bus}:{addr:03X}"
@@ -389,7 +449,7 @@ class HomePage(Page):
                 if self.s.vin == vin_txt:
                     self.vin_details = d
                     self.refresh()
-            self.s.runner.run(lambda: online.vin_details(vin_txt, year), got,
+            self.s.net.run(lambda: online.vin_details(vin_txt, year), got,
                               lambda e: self.s.log(f"VIN details not available: {e}"))
 
     def on_features(self, payload):
@@ -514,6 +574,7 @@ class ConnectPage(Page):
         ports = describe_ports()
         for dev, label in ports:
             self.port.addItem(label, dev)
+        self.port.addItem("Wi-Fi adapter (join its Wi-Fi network first)", WIFI)
         self.port.addItem(SIM, SIM)
         self.port.addItem(SIM_OLD, SIM_OLD)
         if not ports and hasattr(self, "info") and not self.s.connected:
@@ -556,6 +617,21 @@ class ConnectPage(Page):
             self.s.log("Disconnected")
             return
         port = self.port.currentData() or self.port.currentText()
+        if port == WIFI:
+            from PySide6.QtWidgets import QInputDialog
+            cfg = library.settings()
+            addr, ok = QInputDialog.getText(self, "Wi-Fi adapter", "Adapter address (most use 192.168.0.10:35000):",
+                                            text=cfg.get("wifi_adapter", WIFI_DEFAULT))
+            if not ok:
+                return
+            try:
+                parse_wifi(addr)
+            except ElmError as e:
+                QMessageBox.warning(self, "Hatchling", str(e))
+                return
+            cfg["wifi_adapter"] = addr.strip()
+            library.save_settings(cfg)
+            port = "tcp://" + addr.strip().removeprefix("tcp://")
         sim = port in (SIM, SIM_OLD)
         legacy = port == SIM_OLD
         baud_choice = self.baud.currentText()
@@ -566,13 +642,13 @@ class ConnectPage(Page):
         self.info.setText("Connecting...")
 
         def connect():
-            if sim:
-                baud = 38400
+            if sim or port.startswith("tcp://"):
+                baud = 38400   # not used for Wi-Fi
             elif baud_choice == "Automatic":
                 baud = find_baud(port, remembered, log=self.s.log)
             else:
                 baud = int(baud_choice)
-            t = SimTransport(legacy=legacy) if sim else SerialTransport(port, baud)
+            t = SimTransport(legacy=legacy) if sim else open_transport(port, baud)
             elm = ELM327(t, log=self.s.log)
             elm.trace = trace
             try:
@@ -604,7 +680,7 @@ class ConnectPage(Page):
 
         def ok(res):
             elm, uds, obd, v, vin_txt, has_can, proto, baud = res
-            if not sim:
+            if not sim and not port.startswith("tcp://"):
                 cfg = library.settings()
                 cfg.setdefault("baud_by_port", {})[port] = baud
                 library.save_settings(cfg)
@@ -617,6 +693,10 @@ class ConnectPage(Page):
             s.vin_info = vin.decode(vin_txt)
             s.voltage = v
             s.factory = factory.load(vin_txt) if vin_txt else None
+            if sim and not legacy and not s.factory:
+                from core.sim import sample_factory
+                s.factory = sample_factory()
+                s.log("Simulator: sample factory file loaded (auto headlights were off when it was built)")
             s.factory_changed.emit()
             if chosen:
                 s.profile = chosen
@@ -823,9 +903,21 @@ class ModulesPage(Page):
             self.donor_btn.setEnabled(True)
             self.share_fac_btn.setEnabled(True)
         else:
-            self.factory_label.setText(f"<span style='color:{WARN}'>●</span> No factory As-Built yet. Before "
-                                       "changing anything, download it for your VIN (motorcraftservice.com, "
-                                       "As-Built data) and import it here.")
+            others = [v for v, _ in factory.stored() if v != self.s.vin]
+            if others and self.s.connected and self.s.vin:
+                where = "the simulator" if self.s.simulated else "this car"
+                self.factory_label.setText(
+                    f"<span style='color:{WARN}'>●</span> You have a factory file for <b>{', '.join(others[:3])}</b>, "
+                    f"but you're connected to {where} ({self.s.vin}). Connect to "
+                    f"{'your car' if self.s.simulated else 'that car'} to use it.")
+            elif others and not self.s.connected:
+                self.factory_label.setText(
+                    f"<span style='color:{OK}'>●</span> Factory file saved for <b>{', '.join(others[:3])}</b>. "
+                    "Connect to the car and it's used automatically.")
+            else:
+                self.factory_label.setText(f"<span style='color:{WARN}'>●</span> No factory As-Built yet. Before "
+                                           "changing anything, use <b>Get my factory file</b> to download it for "
+                                           "your VIN and import it here.")
             self.diff_btn.setEnabled(False)
             self.donor_btn.setEnabled(False)
             self.share_fac_btn.setEnabled(False)
@@ -937,11 +1029,18 @@ class ModulesPage(Page):
         self.s.log("Features detected: " + (", ".join(on) + " on" if on else "none on"))
 
     def render(self):
+        """One row per module - a gateway module that answers on both buses (like the body module) is
+        shown once, with both buses."""
         self.tbl.setRowCount(0)
+        rows: Dict[tuple, list] = {}
         for m in sorted(self.s.modules.values(), key=lambda m: (m.bus, m.addr)):
+            key = (m.addr, m.identity.get("Part number", "") or m.key, m.identity.get("Software", ""))
+            rows.setdefault(key, []).append(m)
+        for ms in sorted(rows.values(), key=lambda ms: (ms[0].bus, ms[0].addr)):
+            m = ms[0]
             r = self.tbl.rowCount()
             self.tbl.insertRow(r)
-            vals = [f"{m.addr:03X}", m.bus, m.name, m.identity.get("Part number", ""),
+            vals = [f"{m.addr:03X}", " + ".join(x.bus for x in ms), m.name, m.identity.get("Part number", ""),
                     m.identity.get("Software", ""), m.identity.get("VIN", "")]
             for c, v in enumerate(vals):
                 self.tbl.setItem(r, c, item(v, ACCENT if c == 0 else None))
@@ -957,11 +1056,14 @@ class DtcPage(Page):
         self.details = button("Details")
         self.clear = button("Clear fault codes", "danger")
         self.export = button("Save a report")
+        self.mot = button("MOT check")
+        self.mot.setToolTip("Checks the engine's emissions self-tests - the ones an MOT tester looks at")
         self.read.clicked.connect(self.read_all)
         self.details.clicked.connect(self.show_details)
         self.clear.clicked.connect(self.clear_all)
         self.export.clicked.connect(self.export_report)
-        for w in (self.read, self.details, self.clear):
+        self.mot.clicked.connect(self.mot_check)
+        for w in (self.read, self.details, self.clear, self.mot):
             row.addWidget(w)
         row.addStretch()
         self.summary = QLabel("")
@@ -1077,10 +1179,21 @@ class DtcPage(Page):
 
     def show_details(self):
         r = self.tbl.currentRow()
-        if r < 0 or r >= len(self.found) or not self.found[r][1] or not self.need_connection():
+        if r < 0 or r >= len(self.found) or not self.need_connection():
             return
         m, raw, st = self.found[r]
-        code = dtc.decode(raw)
+        code = self.tbl.item(r, 1).text()
+        if code == "-":
+            return
+        if not raw:   # generic OBD-II code: the engine's freeze frame
+            def ok(frame):
+                CodeDialog(self, self.s, code, "Engine", self.tbl.item(r, 2).text(),
+                           [("Freeze frame", "<br>".join(f"{html.escape(k)}: <b>{html.escape(str(v))}</b>"
+                                                         for k, v in frame.items()) or "none stored")]).exec()
+            self.s.ensure_bus(OBD, lambda: self.s.runner.run(self.s.obd.freeze_frame, ok,
+                                                             lambda e: CodeDialog(self, self.s, code, "Engine", "",
+                                                                                  [("Freeze frame", str(e))]).exec()))
+            return
 
         def job():
             out = {}
@@ -1092,19 +1205,31 @@ class DtcPage(Page):
             return out
 
         def ok(res):
-            parts = [f"<h3>{code} - {m.name}</h3><p>{dtc.description(code) or ''}</p>"
-                     f"<p><b>Status:</b> {dtc.describe_status(st)} (0x{st:02X})</p>"]
+            sections = []
             for name, v in res.items():
                 if isinstance(v, (bytes, bytearray)):
                     body = decode_snapshot(v) if name == "Freeze frame" else v.hex(" ").upper() or "none"
                 else:
-                    body = f"<span style='color:{MUTED}'>{v}</span>"
-                parts.append(f"<p><b>{name}</b><br>{body}</p>")
-            box = QMessageBox(self)
-            box.setWindowTitle(code)
-            box.setText("".join(parts))
-            box.exec()
+                    body = f"<span style='color:{MUTED}'>{html.escape(v)}</span>"
+                sections.append((name, body))
+            CodeDialog(self, self.s, code, m.name, f"{dtc.describe_status(st)} (0x{st:02X})", sections).exec()
         self.s.ensure_bus(m.bus, lambda: self.s.runner.run(job, ok))
+
+    def mot_check(self):
+        """The engine's emissions self-tests (readiness monitors), as an MOT emissions test reads them."""
+        if not self.need_connection():
+            return
+        if self.s.obd_only:
+            bus, get = OBD, self.s.obd.pid
+        else:
+            bus, get = HS, (lambda pid: self.s.uds.obd_pid(pid, 0x7E0))
+
+        def ok(r):
+            MotDialog(self, r).exec()
+            self.s.record(history.NOTE, "MOT check: " + ("looks ready" if r["ready"] else
+                                                        f"not ready ({', '.join(r['incomplete']) or 'warning light on'})"),
+                          {"incomplete": r["incomplete"], "mil": r["mil"]})
+        self.s.ensure_bus(bus, lambda: self.s.runner.run(lambda: obd_readiness(get), ok))
 
     def clear_all(self):
         if not self.need_connection() or not self.s.modules:
@@ -1127,22 +1252,157 @@ class DtcPage(Page):
         self.s.per_bus({b: job(ms) for b, ms in self._by_bus().items()}, lambda b, r: None, self.read_all)
 
     def export_report(self):
+        """A car health report - fault codes, MOT readiness, features and modules - saved as a PDF."""
         if not self.s.modules:
-            QMessageBox.information(self, "Hatchling", "Scan for modules first (and read codes) to build a report.")
+            QMessageBox.information(self, "Hatchling", "Scan the car first (and read the fault codes) to build a "
+                                                       "report.")
             return
         rows = [tuple(self.tbl.item(r, c).text() for c in range(4)) for r in range(self.tbl.rowCount())
                 if self.tbl.item(r, 1).text() != "-"]
-        volts = None
-        if self.s.connected:
+        default = os.path.join(report.REPORT_DIR, time.strftime(f"Car health report {self.s.vin or ''} %Y-%m-%d.pdf"))
+        os.makedirs(report.REPORT_DIR, exist_ok=True)
+        path, _ = QFileDialog.getSaveFileName(self, "Save car health report", default, "PDF (*.pdf)")
+        if not path:
+            return
+        mods = list({m.addr: m for m in self.s.modules.values()}.values())
+        feats = [f for f in features.load_all() if f.configured]
+        groups = features.summary(feats, self.s.feature_states) if self.s.feature_states else None
+
+        def build(readiness):
+            doc_html = report.build_html(self.s.vin, self.s.voltage, mods, rows,
+                                         self.s.vin_info.summary if self.s.vin_info else "", readiness, groups, True)
             try:
-                volts = self.s.elm.voltage()
-            except Exception:
-                pass
-        mods = {m.addr: m for m in self.s.modules.values()}.values()
-        path = report.write_html(self.s.vin, volts, list(mods), rows)
-        self.s.log(f"Report saved: {path}")
-        import webbrowser
-        webbrowser.open("file:///" + path.replace(os.sep, "/"))
+                save_pdf(doc_html, path)
+            except OSError as e:
+                QMessageBox.warning(self, "Hatchling", f"Couldn't save the report: {e}")
+                return
+            self.s.log(f"Report saved: {path}")
+            open_url("file:///" + path.replace(os.sep, "/"))
+        if not self.s.connected:
+            build(None)
+            return
+        bus, get = (OBD, self.s.obd.pid) if self.s.obd_only else (HS, lambda pid: self.s.uds.obd_pid(pid, 0x7E0))
+        self.s.ensure_bus(bus, lambda: self.s.runner.run(lambda: obd_readiness(get), build, lambda e: build(None)))
+
+
+def save_pdf(doc_html: str, path: str):
+    from PySide6.QtGui import QPageSize, QPdfWriter, QTextDocument
+    writer = QPdfWriter(path)
+    writer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+    writer.setResolution(110)
+    writer.setTitle("Car health report")
+    doc = QTextDocument()
+    doc.setDefaultStyleSheet("body{font-family:'Segoe UI',Arial;font-size:10pt;color:#1b2430}"
+                             "h1{font-size:18pt} h2{font-size:13pt;margin-top:14px} th{background:#eef2f6}"
+                             "td,th{border-color:#ccd5df}")
+    doc.setHtml(doc_html)
+    doc.setPageSize(QSizeF(writer.width(), writer.height()))
+    doc.print_(writer)
+    if not os.path.isfile(path):
+        raise OSError("the PDF wasn't written")
+
+
+def obd_readiness(get):
+    from core.obd import readiness_report
+    return readiness_report(get)
+
+
+class CodeDialog(QDialog):
+    """One fault code: what it means, the conditions when it was stored, and what fixed it for others."""
+
+    def __init__(self, parent, s: "Session", code: str, module: str, status: str, sections: List[Tuple[str, str]]):
+        super().__init__(parent)
+        self.s, self.code = s, code
+        self.setWindowTitle(code)
+        self.setMinimumSize(560, 460)
+        lay = QVBoxLayout(self)
+        base = code.split("-")[0]
+        meaning = dtc.description(code)
+        parts = [f"<h2 style='margin:0'>{html.escape(code)}</h2>",
+                 f"<p style='color:{MUTED}'>{html.escape(module)}{' · ' + html.escape(status) if status else ''}</p>",
+                 f"<p><b>{html.escape(meaning) if meaning else 'No description for this code yet.'}</b></p>"]
+        if base[:2] in ("P1", "P3", "B1", "B2", "C1", "U1", "U2") and not meaning:
+            parts.append(f"<p style='color:{MUTED}'>Codes like this are set by Ford rather than the common "
+                         "standard, so the meaning depends on the module.</p>")
+        for name, body in sections:
+            parts.append(f"<h3>{html.escape(name)}</h3><p>{body}</p>")
+        tips = library.code_tips(base)
+        parts.append("<h3>What fixed it for other owners</h3>")
+        if tips:
+            parts.append("".join(f"<p>• {html.escape(t['text'])}"
+                                 f"{' <span style=color:' + MUTED + '>(' + html.escape(t['car']) + ')</span>' if t.get('car') else ''}"
+                                 "</p>" for t in tips))
+        else:
+            parts.append(f"<p style='color:{MUTED}'>No tips for {html.escape(base)} yet. If you fix it, share what "
+                         "worked so the next person knows where to look.</p>")
+        view = QTextBrowser()
+        view.setOpenExternalLinks(True)
+        view.setHtml("".join(parts))
+        lay.addWidget(view, 1)
+        row = QHBoxLayout()
+        search = button("Search the community")
+        search.clicked.connect(lambda: self._open(lambda: library.code_search_link(base)))
+        share = button("Share what fixed it")
+        share.clicked.connect(lambda: self._open(lambda: library.code_fix_link(
+            base, s.vin_info.summary if s.vin_info else "")))
+        close = button("Close", "primary")
+        close.clicked.connect(self.accept)
+        row.addWidget(search)
+        row.addWidget(share)
+        row.addStretch()
+        row.addWidget(close)
+        lay.addLayout(row)
+
+    def _open(self, url_fn):
+        try:
+            open_url(url_fn())
+        except library.LibraryError as e:
+            QMessageBox.information(self, "Hatchling", str(e))
+
+
+class MotDialog(QDialog):
+    def __init__(self, parent, r: dict):
+        super().__init__(parent)
+        self.setWindowTitle("MOT check")
+        self.setMinimumSize(520, 520)
+        lay = QVBoxLayout(self)
+        if r["ready"]:
+            head = f"<h2 style='color:{OK};margin:0'>Looks ready for the emissions check</h2>"
+        else:
+            head = f"<h2 style='color:{WARN};margin:0'>Not ready yet</h2>"
+        why = []
+        if r["mil"]:
+            why.append(f"The engine warning light is <b>on</b> ({r['codes']} code(s)) - that's an MOT fail on its own. "
+                       "Read the fault codes and fix the cause first.")
+        if r["incomplete"]:
+            why.append("These self-tests haven't finished: <b>" + ", ".join(r["incomplete"]) + "</b>. They finish "
+                       "by themselves with normal driving - usually a mix of town and steady 40-60 mph driving over a "
+                       "few days. Clearing codes or disconnecting the battery resets them.")
+        if not why:
+            why.append("No warning light and the self-tests have finished.")
+        since = []
+        if "warmups" in r:
+            since.append(f"{r['warmups']} warm-up(s)")
+        if "distance_km" in r:
+            since.append(f"{r['distance_km']} km ({round(r['distance_km'] * 0.621)} miles)")
+        info = QLabel(head + "<p>" + "</p><p>".join(why) + "</p>" +
+                      (f"<p style='color:{MUTED}'>Since the codes were last cleared: {', '.join(since)}.</p>" if since else "") +
+                      f"<p style='color:{MUTED}'>A guide only - the tester's own equipment and rules decide. "
+                      f"{'Diesel' if r['diesel'] else 'Petrol'} engine.</p>")
+        info.setWordWrap(True)
+        lay.addWidget(info)
+        tbl = table(["Self-test", "Result"])
+        for name, supported, complete in r["monitors"]:
+            if not supported:
+                continue
+            i = tbl.rowCount()
+            tbl.insertRow(i)
+            tbl.setItem(i, 0, item(name))
+            tbl.setItem(i, 1, item("Complete" if complete else "Not finished yet", OK if complete else WARN))
+        lay.addWidget(tbl, 1)
+        close = button("Close", "primary")
+        close.clicked.connect(self.accept)
+        lay.addWidget(close, 0, Qt.AlignRight)
 
 
 def decode_snapshot(data: bytes) -> str:
@@ -1203,6 +1463,9 @@ class LivePage(Page):
         self.btn.clicked.connect(self.toggle)
         self.rec_btn = button("Record to CSV")
         self.rec_btn.clicked.connect(self.toggle_record)
+        self.replay_btn = button("Open a recording")
+        self.replay_btn.setToolTip("Play back a recording as a graph - handy for faults that come and go")
+        self.replay_btn.clicked.connect(self.open_recording)
         self.bus_box = QComboBox()
         self.bus_box.currentIndexChanged.connect(self.change_bus)
         s.connected_changed.connect(lambda _: self.fill_buses())
@@ -1210,6 +1473,7 @@ class LivePage(Page):
         reload_btn.clicked.connect(self.build)
         row.addWidget(self.btn)
         row.addWidget(self.rec_btn)
+        row.addWidget(self.replay_btn)
         row.addSpacing(12)
         row.addWidget(QLabel("Bus"))
         row.addWidget(self.bus_box)
@@ -1375,6 +1639,145 @@ class LivePage(Page):
         if self.timer.isActive() and not self.recorder:
             self.stop()
         super().hideEvent(e)
+
+    def open_recording(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Open a recording", livedata.LOG_DIR, "Recordings (*.csv)")
+        if not path:
+            return
+        try:
+            times, cols = livedata.load_recording(path)
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, "Hatchling", f"Couldn't open that recording: {e}")
+            return
+        if len(times) < 2:
+            QMessageBox.information(self, "Hatchling", "That recording is empty.")
+            return
+        ReplayDialog(self, os.path.basename(path), times, cols).exec()
+
+
+SERIES_COLORS = ["#E07A1F", "#2F7DD1", "#2FA36B", "#C2417A", "#7A5CC7", "#B59A1E", "#1FA2A8", "#8A8F98"]
+
+
+class Chart(QWidget):
+    """A recording as lines over time. Each value has its own scale (shown in the legend); move the mouse
+    over the graph to read every value at that moment."""
+
+    def __init__(self, times: List[float], cols: Dict[str, List[Optional[float]]]):
+        super().__init__()
+        self.times, self.cols = times, cols
+        self.shown = list(cols)[:4]
+        self.cursor: Optional[int] = None
+        self.on_cursor: Callable[[Optional[int]], None] = lambda i: None
+        self.setMouseTracking(True)
+        self.setMinimumHeight(320)
+        self.ranges = {}
+        for n, vals in cols.items():
+            v = [x for x in vals if x is not None]
+            lo, hi = (min(v), max(v)) if v else (0.0, 1.0)
+            self.ranges[n] = (lo, hi if hi > lo else lo + 1)
+
+    def color(self, name: str) -> str:
+        return SERIES_COLORS[list(self.cols).index(name) % len(SERIES_COLORS)]
+
+    def _area(self) -> QRectF:
+        return QRectF(48, 12, max(10, self.width() - 60), max(10, self.height() - 40))
+
+    def mouseMoveEvent(self, e):
+        a = self._area()
+        x = e.position().x()
+        if a.left() <= x <= a.right():
+            t = self.times[0] + (x - a.left()) / a.width() * (self.times[-1] - self.times[0])
+            self.cursor = min(range(len(self.times)), key=lambda i: abs(self.times[i] - t))
+        else:
+            self.cursor = None
+        self.update()
+        self.on_cursor(self.cursor)
+
+    def leaveEvent(self, e):
+        self.cursor = None
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        a = self._area()
+        t0, t1 = self.times[0], self.times[-1]
+        span = (t1 - t0) or 1
+        p.setPen(QPen(QColor(LINE), 1))
+        for i in range(5):
+            y = a.top() + i * a.height() / 4
+            p.drawLine(QPointF(a.left(), y), QPointF(a.right(), y))
+        p.setPen(QColor(MUTED))
+        for i in range(5):
+            t = t0 + i * span / 4
+            x = a.left() + i * a.width() / 4
+            p.drawText(QRectF(x - 40, a.bottom() + 4, 80, 18), Qt.AlignHCenter, f"{t:.0f} s")
+        for n in self.shown:
+            lo, hi = self.ranges[n]
+            p.setPen(QPen(QColor(self.color(n)), 1.8))
+            prev = None
+            for t, v in zip(self.times, self.cols[n]):
+                if v is None:
+                    prev = None
+                    continue
+                pt = QPointF(a.left() + (t - t0) / span * a.width(), a.bottom() - (v - lo) / (hi - lo) * a.height())
+                if prev is not None:
+                    p.drawLine(prev, pt)
+                prev = pt
+        if self.cursor is not None:
+            x = a.left() + (self.times[self.cursor] - t0) / span * a.width()
+            p.setPen(QPen(QColor(INK), 1, Qt.DashLine))
+            p.drawLine(QPointF(x, a.top()), QPointF(x, a.bottom()))
+
+
+class ReplayDialog(QDialog):
+    def __init__(self, parent, title: str, times, cols):
+        super().__init__(parent)
+        self.setWindowTitle(f"Recording - {title}")
+        self.resize(980, 600)
+        lay = QHBoxLayout(self)
+        left = QVBoxLayout()
+        hint = QLabel("Tick up to 8 values. Each line has its own scale.")
+        hint.setObjectName("subtle")
+        hint.setWordWrap(True)
+        left.addWidget(hint)
+        self.chart = Chart(times, cols)
+        self.boxes = {}
+        for n in cols:
+            lo, hi = self.chart.ranges[n]
+            cb = QCheckBox(f"{n}  ({lo:g} – {hi:g})")
+            cb.setStyleSheet(f"color: {self.chart.color(n)}; font-weight: 600;")
+            cb.setChecked(n in self.chart.shown)
+            cb.toggled.connect(self.pick)
+            self.boxes[n] = cb
+            left.addWidget(cb)
+        left.addStretch()
+        self.readout = QLabel("Move the mouse over the graph to read the values.")
+        self.readout.setWordWrap(True)
+        self.readout.setMinimumWidth(240)
+        left.addWidget(self.readout)
+        close = button("Close", "primary")
+        close.clicked.connect(self.accept)
+        left.addWidget(close)
+        lay.addLayout(left)
+        self.chart.on_cursor = self.on_cursor
+        lay.addWidget(self.chart, 1)
+        self.times, self.cols = times, cols
+
+    def pick(self, _):
+        chosen = [n for n, cb in self.boxes.items() if cb.isChecked()][:8]
+        self.chart.shown = chosen
+        self.chart.update()
+
+    def on_cursor(self, i):
+        if i is None:
+            return
+        lines = [f"<b>{self.times[i]:.1f} s</b>"]
+        for n in self.chart.shown:
+            v = self.cols[n][i]
+            lines.append(f"<span style='color:{self.chart.color(n)}'>{html.escape(n)}: "
+                         f"<b>{'-' if v is None else f'{v:g}'}</b></span>")
+        self.readout.setText("<br>".join(lines))
 
 
 # ---------------------------------------------------------------- Feature finder
@@ -1873,6 +2276,18 @@ class AsBuiltPage(Page):
         frow.addWidget(self.finder_btn)
         frow.addWidget(self.compare_btn)
         frow.addWidget(self.factory_btn)
+        frow.addSpacing(24)
+        wlabel = QLabel("Whole car")
+        wlabel.setObjectName("subtle")
+        frow.addWidget(wlabel)
+        self.fullbk_btn = button("Back up every module")
+        self.fullbk_btn.clicked.connect(self.backup_everything)
+        self.restore_btn = button("Restore a full backup")
+        self.restore_btn.clicked.connect(self.restore_backup)
+        self.tofactory_btn = button("Put everything back to factory")
+        self.tofactory_btn.clicked.connect(self.restore_factory)
+        for b in (self.fullbk_btn, self.restore_btn, self.tofactory_btn):
+            frow.addWidget(b)
         frow.addStretch()
         self.root.addLayout(frow)
 
@@ -2191,6 +2606,64 @@ class AsBuiltPage(Page):
                                 "save a change you made as a feature. <b>Write changes</b> would put these bytes "
                                 "back to factory - <b>Undo edits</b> to leave the module as it is.")
 
+    # ---- whole car ---------------------------------------------------------
+    def _scanned(self) -> Optional[List[Module]]:
+        if not self.need_connection():
+            return None
+        mods = [m for m in self.s.modules.values() if m.bus in BUSES and BUSES[m.bus].protocol == "can"]
+        if not mods:
+            QMessageBox.information(self, "Hatchling", "Scan the car first (Modules > Scan the car).")
+            return None
+        return mods
+
+    def backup_everything(self):
+        if self._scanned() is None:
+            return
+        self.s.full_backup(lambda path: QMessageBox.information(self, "Full backup saved", path) if path else None,
+                           note="manual")
+
+    def restore_backup(self):
+        mods = self._scanned()
+        if mods is None:
+            return
+        start = safety.full_backups(self.s.vin)
+        path, _ = QFileDialog.getOpenFileName(self, "Full backup to restore",
+                                              start[0] if start else asbuilt.BACKUP_DIR, "Full backup (full-backup-*.json)")
+        if not path:
+            return
+        try:
+            info, saved = safety.load_full(path)
+        except (OSError, ValueError, KeyError) as e:
+            QMessageBox.warning(self, "Hatchling", f"Couldn't read that backup: {e}")
+            return
+        if info.get("vin") and self.s.vin and info["vin"] != self.s.vin:
+            QMessageBox.warning(self, "Hatchling", f"That backup is from another car ({info['vin']}). Hatchling "
+                                                 "only restores a car's own backups.")
+            return
+        by_addr = {a: blocks for _, a, _, blocks in saved}
+        pairs = [(m, (lambda cur, a=m.addr: by_addr[a])) for m in self._one_per_addr(mods) if m.addr in by_addr]
+        restore_all(self, self.s, f"backup from {info.get('taken', '?')}", pairs)
+
+    def restore_factory(self):
+        mods = self._scanned()
+        if mods is None:
+            return
+        fac = self.s.factory
+        if not fac:
+            QMessageBox.information(self, "Hatchling", "Import your car's factory file first (Modules > Get my "
+                                                       "factory file).")
+            return
+        pairs = [(m, (lambda cur, a=m.addr: factory.align(fac.blocks(a), cur)))
+                 for m in self._one_per_addr(mods) if m.addr in fac.modules]
+        restore_all(self, self.s, "factory settings", pairs)
+
+    def _one_per_addr(self, mods: List[Module]) -> List[Module]:
+        cur = self.s.elm.bus if self.s.elm else ""
+        out: Dict[int, Module] = {}
+        for m in sorted(mods, key=lambda m: m.bus != cur):
+            out.setdefault(m.addr, m)
+        return list(out.values())
+
     def compare_backups(self):
         a, _ = QFileDialog.getOpenFileName(self, "Backup WITHOUT the feature (before)", asbuilt.BACKUP_DIR,
                                            "Hatchling backup (*.json)")
@@ -2243,8 +2716,57 @@ class AsBuiltPage(Page):
             (QMessageBox.information if res.verified else QMessageBox.critical)(self, "Write result",
                                                                              f"{res.message}<br><br>Backup: {res.backup_path}")
             self.read()
-        self.s.ensure_bus(m.bus, lambda: self.s.runner.run(
-            lambda: asbuilt.safe_write(self.s.uds, m, orig, target, self.s.vin, self.s.log), ok))
+        self.s.before_write(lambda: self.s.ensure_bus(m.bus, lambda: self.s.runner.run(
+            lambda: asbuilt.safe_write(self.s.uds, m, orig, target, self.s.vin, self.s.log), ok)))
+
+
+def restore_all(parent, s: "Session", what: str, pairs: List[Tuple[Module, Callable[[asbuilt.Blocks], asbuilt.Blocks]]]):
+    """Reads each module, works out what differs from `what`, asks once, then writes and checks every module."""
+    if not pairs:
+        QMessageBox.information(parent, "Hatchling", f"None of the scanned modules are in the {what}.")
+        return
+    plan: List[Tuple[Module, asbuilt.Blocks, asbuilt.Blocks]] = []
+
+    def read_bus(mods):
+        out = []
+        for m, wanted in mods:
+            try:
+                cur = asbuilt.read_blocks(s.uds, m)
+            except (UdsError, ElmError) as e:
+                s.log(f"{m.name}: couldn't read - {e}")
+                continue
+            targets = safety.restore_targets(cur, wanted(cur))
+            if targets:
+                out.append((m, cur, {**cur, **targets}))
+        return out
+    jobs = {b: (lambda b=b: read_bus([p for p in pairs if p[0].bus == b])) for b in {m.bus for m, _ in pairs}}
+
+    def planned():
+        if not plan:
+            QMessageBox.information(parent, "Hatchling", f"Every module already matches the {what}. Nothing to do.")
+            return
+        lines = "".join(f"<tr><td>{html.escape(m.name)}</td><td>{len(asbuilt.diff(cur, tgt))} byte(s)</td></tr>"
+                        for m, cur, tgt in plan)
+        if QMessageBox.question(parent, "Restore", f"<b>Put {len(plan)} module(s) back to the {what}?</b><br><br>"
+                                f"<table cellspacing=6>{lines}</table><br>Each module is backed up before it's "
+                                "written and checked afterwards. Keep the ignition on and a charger connected.") \
+                != QMessageBox.Yes:
+            return
+        results = []
+        wjobs = {b: (lambda b=b: [(m, asbuilt.safe_write(s.uds, m, cur, tgt, s.vin, s.log))
+                                  for m, cur, tgt in plan if m.bus == b]) for b in {m.bus for m, _, _ in plan}}
+
+        def written():
+            bad = [f"{m.name}: {r.message}" for m, r in results if not r.verified]
+            s.record(history.WRITE, f"Restored {len(results)} module(s) to the {what}"
+                     + (f" - {len(bad)} failed" if bad else ""), {"modules": [f"{m.addr:03X}" for m, _ in results]})
+            if bad:
+                QMessageBox.critical(parent, "Restore", "Some modules didn't verify:<br>" + "<br>".join(bad))
+            else:
+                SuccessDialog(parent, "Restored", [f"{len(results)} module(s) put back to the {what}.",
+                                                   "Turn the ignition off for 30 seconds, then back on."]).exec()
+        s.before_write(lambda: s.per_bus(wjobs, lambda b, r: results.extend(r), written))
+    s.per_bus(jobs, lambda b, r: plan.extend(r), planned)
 
 
 # ---------------------------------------------------------------- Dashboard
@@ -2634,6 +3156,90 @@ def open_url(url: str):
     webbrowser.open(url)
 
 
+class WishListDialog(QDialog):
+    """Features owners want that nobody has found the settings for yet. Pick one to look for on your car."""
+    STATUS = {"wanted": "Wanted", "being found": "Someone's looking", "in library": "In the library"}
+
+    def __init__(self, parent, s: "Session"):
+        super().__init__(parent)
+        self.s = s
+        self.setWindowTitle("Wish list")
+        self.setMinimumSize(760, 480)
+        lay = QVBoxLayout(self)
+        intro = QLabel("Features people want switched on that aren't in the library yet. If your car has one (or you "
+                       "can switch it on another way, like the car's own menu), you can find its settings with "
+                       "<b>Learn a feature</b> - nothing is written to your car while you do. Then share it and "
+                       "everyone with the same car can turn it on.")
+        intro.setWordWrap(True)
+        lay.addWidget(intro)
+        self.items = library.wishlist()
+        self.tbl = table(["Feature", "Car", "Where it's likely set", "Status"])
+        for w in self.items:
+            r = self.tbl.rowCount()
+            self.tbl.insertRow(r)
+            st = w.get("status", "wanted")
+            for c, v in enumerate([w["name"], w.get("models", ""), w.get("modules_hint", ""),
+                                   self.STATUS.get(st, st)]):
+                self.tbl.setItem(r, c, item(v, OK if c == 3 and st == "in library" else
+                                            WARN if c == 3 and st == "being found" else None))
+        self.tbl.currentCellChanged.connect(lambda r, *_: self.show_item(r))
+        lay.addWidget(self.tbl, 1)
+        self.about = QLabel("Pick a feature to see what it does.")
+        self.about.setWordWrap(True)
+        self.about.setObjectName("subtle")
+        lay.addWidget(self.about)
+        row = QHBoxLayout()
+        claim = button("I'll look for this")
+        claim.setToolTip("Opens a post on GitHub so others know you're on it and can help")
+        claim.clicked.connect(self.claim)
+        learn = button("Learn it on my car", "primary")
+        learn.clicked.connect(self.learn)
+        req = button("Request something else")
+        req.clicked.connect(lambda: self._open(lambda: library.request_feature_link(self.car())))
+        close = button("Close")
+        close.clicked.connect(self.accept)
+        for b in (claim, learn, req):
+            row.addWidget(b)
+        row.addStretch()
+        row.addWidget(close)
+        lay.addLayout(row)
+        if not self.items:
+            self.about.setText("The wish list hasn't downloaded yet - press Check for new features first.")
+
+    def car(self) -> str:
+        return self.s.vin_info.summary if self.s.vin_info else ""
+
+    def current(self) -> Optional[dict]:
+        r = self.tbl.currentRow()
+        return self.items[r] if 0 <= r < len(self.items) else None
+
+    def show_item(self, r):
+        w = self.items[r] if 0 <= r < len(self.items) else None
+        if w:
+            self.about.setText(f"<b>{html.escape(w['name'])}</b> - {html.escape(w.get('description', ''))}")
+
+    def _open(self, url_fn):
+        try:
+            open_url(url_fn())
+        except library.LibraryError as e:
+            QMessageBox.information(self, "Hatchling", str(e))
+
+    def claim(self):
+        w = self.current()
+        if not w:
+            QMessageBox.information(self, "Hatchling", "Pick a feature first.")
+            return
+        self._open(lambda: library.find_feature_link(w, self.car()))
+
+    def learn(self):
+        w = self.current()
+        if not w:
+            QMessageBox.information(self, "Hatchling", "Pick a feature first.")
+            return
+        self.accept()
+        self.s.open_learn(w["name"])
+
+
 class LibraryPage(Page):
     def __init__(self, s):
         super().__init__(s, "Feature library", "Features other owners have worked out on the same car. Install one, "
@@ -2644,6 +3250,8 @@ class LibraryPage(Page):
         self.only_mine = QCheckBox("Only features for my car's modules")
         self.only_mine.setChecked(True)
         settings_btn = button("Library settings")
+        wish_btn = button("Wish list - help find features")
+        wish_btn.clicked.connect(lambda: WishListDialog(self, self.s).exec())
         self.refresh_btn.clicked.connect(self.refresh)
         self.install_btn.clicked.connect(self.install)
         self.only_mine.toggled.connect(self.render)
@@ -2653,6 +3261,7 @@ class LibraryPage(Page):
         row.addSpacing(12)
         row.addWidget(self.only_mine)
         row.addStretch()
+        row.addWidget(wish_btn)
         row.addWidget(settings_btn)
         self.root.addLayout(row)
         self.status = QLabel("")
@@ -2713,7 +3322,7 @@ class LibraryPage(Page):
 
         def err(e):
             self.show_status(f"<span style='color:{WARN}'>offline - {e}</span>" if not quiet else "")
-        self.s.runner.run(library.update, ok, err)
+        self.s.net.run(lambda: (library.update(), library.update_extras())[0], ok, err)
 
     def match(self, entry: dict) -> Tuple[str, str]:
         if not self.s.modules:
@@ -2815,20 +3424,31 @@ class CommunityPage(Page):
         browse.clicked.connect(lambda: self.open_path("discussions"))
         fb = button("Give feedback or report a problem")
         fb.clicked.connect(lambda: self.open_path("issues/new?template=feedback.yml"))
+        req = button("Request a feature")
+        req.clicked.connect(lambda: open_url(library.request_feature_link(self.car())) if library.repo() else
+                            self.open_path(""))
+        self.show_what = QComboBox()
+        self.show_what.addItem("Everything", "")
+        self.show_what.addItem("Most wanted requests", "feature-request")
+        self.show_what.addItem("Fault code fixes", "code-fix")
+        self.show_what.addItem("Features being looked for", "finding-feature")
+        self.show_what.currentIndexChanged.connect(lambda _: self.refresh())
         self.refresh_btn = button("Refresh")
         self.refresh_btn.clicked.connect(self.refresh)
-        for b in (ask, browse, fb):
+        for b in (ask, browse, fb, req):
             row.addWidget(b)
         row.addStretch()
+        row.addWidget(self.show_what)
         row.addWidget(self.refresh_btn)
         self.root.addLayout(row)
         self.status = QLabel("")
         self.status.setObjectName("subtle")
         self.root.addWidget(self.status)
-        self.tbl = table(["What", "Title", "By", "Replies", "Updated"])
+        self.tbl = table(["What", "Title", "By", "Votes", "Replies", "Updated"])
         self.tbl.itemDoubleClicked.connect(lambda _: self.open_current())
         self.root.addWidget(self.tbl, 1)
-        tip = QLabel("Double-click a post to open it.")
+        tip = QLabel("Double-click a post to open it. To vote for a request, open it and press 👍 on GitHub - "
+                     "the most wanted are worked on first.")
         tip.setObjectName("subtle")
         self.root.addWidget(tip)
         self.posts: List[dict] = []
@@ -2848,6 +3468,9 @@ class CommunityPage(Page):
             return
         open_url(f"https://github.com/{r}/{path}")
 
+    def car(self) -> str:
+        return self.s.vin_info.summary if self.s.vin_info else ""
+
     def open_current(self):
         r = self.tbl.currentRow()
         if 0 <= r < len(self.posts) and self.posts[r]["url"].startswith("https://github.com/"):
@@ -2859,6 +3482,7 @@ class CommunityPage(Page):
             self.status.setText("Set the GitHub repository in Feature library > Library settings.")
             return
         self.status.setText("Loading...")
+        label = self.show_what.currentData() or ""
 
         def ok(posts):
             self.posts = posts
@@ -2868,7 +3492,7 @@ class CommunityPage(Page):
                 self.tbl.insertRow(i)
                 kind = online.post_kind(p["labels"])
                 vals = [kind, p["title"] + ("" if p["state"] == "open" else "  (closed)"), p["by"],
-                        str(p["comments"]), p["updated"]]
+                        str(p.get("votes", 0) or ""), str(p["comments"]), p["updated"]]
                 for c, v in enumerate(vals):
                     self.tbl.setItem(i, c, item(v, ACCENT if c == 0 else MUTED if p["state"] != "open" and c == 1 else None))
             self.status.setText(f"{len(posts)} recent post(s)" if posts else
@@ -2876,7 +3500,7 @@ class CommunityPage(Page):
 
         def err(e):
             self.status.setText(f"Couldn't load posts - {e}. You can still use the buttons above.")
-        self.s.runner.run(lambda: online.community_posts(r), ok, err)
+        self.s.net.run(lambda: online.community_posts(r, label=label), ok, err)
 
 
 # ---------------------------------------------------------------- Service
@@ -2945,7 +3569,10 @@ class ServicePage(Page):
         self.list.clear()
         QListWidgetItem("Restart a module\n     General", self.list)
         for p in self.procs:
-            QListWidgetItem(f"{p.name}\n     {p.category}", self.list)
+            it = QListWidgetItem(f"{p.name}\n     {p.category}" + ("  ·  waiting for values" if p.needs_values else ""),
+                                 self.list)
+            if p.needs_values:
+                it.setForeground(QColor(MUTED))
         self.list.setCurrentRow(0)
 
     def fill_modules(self):
@@ -2963,6 +3590,7 @@ class ServicePage(Page):
         p = self.proc()
         self.steps.clear()
         restart = p == self.RESTART
+        self.run_btn.setText("Run procedure")
         for i in range(self.restart_row.count()):
             w = self.restart_row.itemAt(i).widget()
             if w:
@@ -2980,6 +3608,16 @@ class ServicePage(Page):
             return
         self.title.setText(p.name)
         self.desc.setText(p.description)
+        if p.needs_values:
+            pre = "".join(f"<br>• {c}" for c in p.preconditions)
+            self.meta.setText(f"<span style='color:{WARN}'>Waiting for values</span> · {p.module_label} · "
+                              f"{p.vehicle}<br><br>Hatchling knows this job but not yet the commands the car "
+                              "expects for it, so it can't run it. If you have a tool that does this job, share it "
+                              "in the Community - or request it so others can vote."
+                              f"{'<br><br><b>When it runs it will need:</b>' + pre if pre else ''}")
+            self.run_btn.setText("Request this job")
+            self.confirm.hide()
+            return
         verified = (f"<span style='color:{OK}'>Verified</span>" if p.verified
                     else f"<span style='color:{WARN}'>Not verified - check every step yourself</span>")
         pre = "".join(f"<br>• {c}" for c in p.preconditions)
@@ -3001,7 +3639,15 @@ class ServicePage(Page):
 
     def run(self):
         p = self.proc()
-        if not p or not self.need_connection():
+        if not p:
+            return
+        if p != self.RESTART and p.needs_values:
+            try:
+                open_url(library.request_feature_link(self.s.vin_info.summary if self.s.vin_info else "", p.name))
+            except library.LibraryError as e:
+                QMessageBox.information(self, "Hatchling", str(e))
+            return
+        if not self.need_connection():
             return
         if p == self.RESTART:
             self.run_restart()
@@ -3012,7 +3658,11 @@ class ServicePage(Page):
         self.show_proc()
         self.cancel = False
         self.s.log(f"Service: {p.name} started")
-        self.s.ensure_bus(p.bus, lambda: self._step(p, 0))
+        start = lambda: self.s.ensure_bus(p.bus, lambda: self._step(p, 0))
+        if any(st.type in ("write", "routine", "reset") for st in p.steps):
+            self.s.before_write(start)
+        else:
+            start()
 
     def _step(self, p: services.Procedure, i: int):
         if i >= len(p.steps):
@@ -4020,7 +4670,7 @@ class FeaturesPage(Page):
                 if failures:
                     QMessageBox.critical(self, f.name, "<br>".join(failures))
                 self.read_status(then)
-            self.s.per_bus(jobs, each, done)
+            self.s.before_write(lambda: self.s.per_bus(jobs, each, done))
         self._read_parts(parts, got_fresh)
 
     def next_step(self, f: features.Feature, st: str, pending: int) -> Tuple[str, Optional[str]]:
@@ -4140,6 +4790,8 @@ class FeaturesPage(Page):
 
 # ---------------------------------------------------------------- main window
 class MainWindow(QMainWindow):
+    upd_progress = Signal(object, object)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"Hatchling {VERSION}")
@@ -4292,15 +4944,74 @@ class MainWindow(QMainWindow):
         else:
             self.showNormal()
 
+    # ---- updates: found, downloaded and installed from inside the app ----------------
     def check_updates(self):
+        self.update_path = ""
+        self.update_btn: Optional[QPushButton] = None
+
         def ok(rel):
             if rel is None:
+                updates.clean_old()
                 return
             self.s.log(f"Update available: Hatchling {rel.version}")
-            b = button(f"Update available: v{rel.version} - download", "primary")
-            b.clicked.connect(lambda: __import__("webbrowser").open(rel.url))
-            self.statusBar().addPermanentWidget(b)
-        self.s.runner.run(updates.check, ok, lambda e: self.s.log(f"Update check skipped: {e}"))
+            if rel.installer and rel.sha256 and sys.platform == "win32":
+                self.download_update(rel)
+            else:   # nothing we can install ourselves - fall back to the download page
+                self.show_update_button(f"Update available: v{rel.version}",
+                                        lambda: open_url(rel.page or rel.url), rel.notes)
+        self.s.net.run(updates.check, ok, lambda e: self.s.log(f"Update check skipped: {e}"))
+
+    def show_update_button(self, text: str, on_click, tip: str = ""):
+        if self.update_btn is None:
+            self.update_btn = button(text, "primary")
+            self.statusBar().addPermanentWidget(self.update_btn)
+        else:
+            self.update_btn.setText(text)
+            try:
+                self.update_btn.clicked.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+        self.update_btn.setToolTip(tip)
+        self.update_btn.setEnabled(on_click is not None)
+        if on_click:
+            self.update_btn.clicked.connect(on_click)
+
+    def download_update(self, rel):
+        self.show_update_button(f"Downloading update v{rel.version}…", None)
+        prog = lambda done, total: self.upd_progress.emit(done, total)
+        self._upd_version = rel.version
+        if not getattr(self, "_upd_hooked", False):
+            self._upd_hooked = True
+            self.upd_progress.connect(lambda d, t: self.update_btn and self.update_btn.setText(
+                f"Downloading update v{self._upd_version}… {100 * d // t}%" if t else
+                f"Downloading update v{self._upd_version}… {d // (1024 * 1024)} MB"))
+
+        def ok(path):
+            self.update_path = path
+            self.s.log(f"Update v{rel.version} downloaded and checked: {path}")
+            self.show_update_button(f"Restart to update to v{rel.version}", self.install_update_now,
+                                    f"What's new:\n{rel.notes}\n\nIf you don't restart now, the update installs "
+                                    "when you close Hatchling.")
+
+        def err(e):
+            self.s.log(f"Update download failed: {e}")
+            self.show_update_button(f"Update v{rel.version}: try again", lambda: self.download_update(rel),
+                                    f"The download didn't finish ({e}). Click to try again.")
+        self.s.net.run(lambda: updates.download(rel, prog), ok, err)
+
+    def install_update_now(self):
+        if self.s.runner.busy:
+            QMessageBox.information(self, "Hatchling", "Hatchling is still talking to the car. Try again when "
+                                                       "it's finished.")
+            return
+        try:
+            updates.install(self.update_path, relaunch=True)
+        except updates.UpdateError as e:
+            QMessageBox.warning(self, "Hatchling", f"The update couldn't start: {e}")
+            return
+        self.s.log("Installing the update - Hatchling will reopen when it's done")
+        self.update_path = ""   # don't start it a second time on close
+        self.close()
 
     def open_config(self, bus: str, addr: int, did: Optional[int] = None, byte: Optional[int] = None):
         self.go("Configuration")
@@ -4315,7 +5026,13 @@ class MainWindow(QMainWindow):
     def closeEvent(self, e):
         if self.s.elm:
             self.s.elm.close()
+        if getattr(self, "update_path", "") and library.settings().get("install_updates_on_close", True):
+            try:   # downloaded but not installed yet: install quietly now, without reopening
+                updates.install(self.update_path, relaunch=False)
+            except updates.UpdateError:
+                pass
         self.s.runner.pool.shutdown(wait=False, cancel_futures=True)
+        self.s.net.pool.shutdown(wait=False, cancel_futures=True)
         super().closeEvent(e)
 
 

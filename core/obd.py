@@ -120,3 +120,74 @@ class GenericObd:
             if p and p[0] == pid:
                 return bytes(p[1:])
         raise ElmError(f"PID {pid:02X} not supported")
+
+
+# ---- MOT readiness (mode 01 PID 01) ------------------------------------------------
+CONTINUOUS = [(0, "Misfire"), (1, "Fuel system"), (2, "Components")]
+PETROL_MONITORS = [(0, "Catalyst"), (1, "Heated catalyst"), (2, "Evaporative system"), (3, "Secondary air"),
+                   (4, "A/C refrigerant"), (5, "Oxygen sensor"), (6, "Oxygen sensor heater"), (7, "EGR system")]
+DIESEL_MONITORS = [(0, "NMHC catalyst"), (1, "NOx / AdBlue system"), (3, "Boost pressure"),
+                   (5, "Exhaust gas sensor"), (6, "Particulate filter (DPF)"), (7, "EGR / VVT system")]
+
+
+def readiness(data: bytes) -> dict:
+    """Decodes PID 01: warning light, number of codes and each self-test as (name, supported, complete)."""
+    if len(data) < 4:
+        raise ElmError("Readiness reply too short")
+    a, b, c, d = data[:4]
+    diesel = bool(b & 0x08)
+    mons = [(name, bool(b & (1 << bit)), not (b & (1 << (bit + 4)))) for bit, name in CONTINUOUS]
+    for bit, name in (DIESEL_MONITORS if diesel else PETROL_MONITORS):
+        mons.append((name, bool(c & (1 << bit)), not (d & (1 << bit))))
+    return {"mil": bool(a & 0x80), "codes": a & 0x7F, "diesel": diesel, "monitors": mons}
+
+
+def readiness_report(get_pid) -> dict:
+    """get_pid(pid) -> data bytes (raises if unsupported). Adds the 'since codes were cleared' figures."""
+    r = readiness(get_pid(0x01))
+    for pid, key, fn in ((0x30, "warmups", lambda x: x[0]), (0x31, "distance_km", lambda x: x[0] * 256 + x[1]),
+                         (0x21, "distance_mil_km", lambda x: x[0] * 256 + x[1])):
+        try:
+            r[key] = fn(get_pid(pid))
+        except Exception:   # optional figures - older cars don't all have them
+            pass
+    sup = [m for m in r["monitors"] if m[1]]
+    r["incomplete"] = [m[0] for m in sup if not m[2]]
+    # MOT emissions testers generally accept one incomplete monitor on petrol cars from 2001 (none on others);
+    # this is a guide only, the tester's rules decide.
+    allowed = 0 if r["diesel"] else 1
+    r["ready"] = not r["mil"] and len(r["incomplete"]) <= allowed
+    return r
+
+
+# ---- freeze frame (mode 02, frame 0) -------------------------------------------------
+FREEZE_PIDS = [(0x04, "Engine load", "%", lambda d: round(d[0] * 100 / 255)),
+               (0x05, "Coolant temp", "°C", lambda d: d[0] - 40),
+               (0x06, "Short-term fuel trim", "%", lambda d: round((d[0] - 128) * 100 / 128, 1)),
+               (0x07, "Long-term fuel trim", "%", lambda d: round((d[0] - 128) * 100 / 128, 1)),
+               (0x0B, "Manifold pressure", "kPa", lambda d: d[0]),
+               (0x0C, "Engine speed", "rpm", lambda d: (d[0] * 256 + d[1]) // 4),
+               (0x0D, "Vehicle speed", "km/h", lambda d: d[0]),
+               (0x0F, "Intake air temp", "°C", lambda d: d[0] - 40),
+               (0x11, "Throttle position", "%", lambda d: round(d[0] * 100 / 255))]
+
+
+def _freeze(self) -> dict:
+    """The engine conditions saved when the first engine fault code was stored."""
+    out = {}
+    lines = self.elm.obd("020200", timeout=3.0)
+    for p in _payload(lines, 0x42, self.is_can):
+        if len(p) >= 4 and p[0] == 0x02:
+            out["Code that saved it"] = decode_dtc(p[2], p[3]) if (p[2] or p[3]) else "none stored"
+    for pid, name, unit, fn in FREEZE_PIDS:
+        try:
+            for p in _payload(self.elm.obd(f"02{pid:02X}00", timeout=2.0), 0x42, self.is_can):
+                if len(p) > 2 and p[0] == pid:
+                    out[name] = f"{fn(bytes(p[2:]))} {unit}"
+                    break
+        except ElmError:
+            continue
+    return out
+
+
+GenericObd.freeze_frame = _freeze

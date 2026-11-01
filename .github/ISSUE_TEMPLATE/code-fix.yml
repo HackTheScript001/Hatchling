@@ -1,0 +1,29 @@
+name: What fixed a fault code
+description: Share what fixed a fault code on your car, so others with the same code know where to look
+title: "Fix for "
+labels: ["code-fix"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Hatchling fills in the code and your car. Tell people what actually fixed it - the part, the cause, roughly
+        what it cost. A maintainer adds the label **approved** and the tip appears in Hatchling next to that code.
+  - type: input
+    id: code
+    attributes:
+      label: Fault code
+      placeholder: P0420
+    validations:
+      required: true
+  - type: input
+    id: car
+    attributes:
+      label: Car
+      placeholder: 2015 Ford Fiesta 1.0 EcoBoost
+  - type: textarea
+    id: fix
+    attributes:
+      label: What fixed it
+      description: Keep it short and practical (no personal details).
+    validations:
+      required: true

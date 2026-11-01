@@ -49,6 +49,7 @@ class Procedure:
     preconditions: List[str]
     steps: List[Step] = field(default_factory=list)
     path: str = ""
+    needs_values: bool = False   # the job is known but its commands haven't been found on a real car yet
 
 
 def _int(v) -> int:
@@ -72,7 +73,7 @@ def load_all(folder: Optional[str] = None) -> List[Procedure]:
                 d.get("id", fn[:-5]), d["name"], d.get("category", "General"), d.get("description", ""),
                 d.get("vehicle", ""), bool(d.get("verified", False)), d.get("source", ""),
                 d.get("bus", "HS").upper(), _int(d["module"]), d.get("module_label", ""),
-                d.get("preconditions", []), steps, path))
+                d.get("preconditions", []), steps, path, bool(d.get("needs_values")) or not steps))
         except (OSError, ValueError, KeyError) as e:
             print(f"Skipping service {fn}: {e}")
     return sorted(out, key=lambda p: (p.category, p.name))

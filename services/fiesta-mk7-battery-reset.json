@@ -1,0 +1,18 @@
+{
+  "id": "fiesta-mk7-battery-reset",
+  "name": "Battery reset after fitting a new battery",
+  "category": "Battery",
+  "description": "Tells the car a new battery has been fitted so the battery monitor relearns it and charging is right. Needed after replacing the battery on cars with a battery monitoring sensor (on the negative terminal).",
+  "vehicle": "Ford Fiesta Mk7 (2008-2017)",
+  "verified": false,
+  "needs_values": true,
+  "source": "Waiting for the commands to be found on a real car",
+  "bus": "HS",
+  "module": "0x000",
+  "module_label": "BCM - Body",
+  "preconditions": [
+    "Ignition on, engine off",
+    "New battery fitted"
+  ],
+  "steps": []
+}
