@@ -1,3 +1,6 @@
+What's new in 1.6.1
+- Garage: the simulator's cars can be added too (marked "simulator"), and the empty garage page no longer has big gaps.
+
 What's new in 1.6.0
 - Linux and Raspberry Pi: Hatchling now runs on Linux (Ubuntu, Debian, Mint and others) and on Raspberry Pi OS 64-bit - so a Pi with a small screen makes a portable diagnostic tool. Install with one line (see How to install below). It updates itself like the Windows version.
 - Small screens: on a small display (like the Pi's 7 inch screen) Hatchling uses a compact layout and opens full screen. F11 switches full screen on and off; both can be changed in Settings.
@@ -63,7 +66,7 @@ Adapters and fixes
 
 How to install
 Hatchling updates itself: click Update in the bottom bar.
-Windows: download Hatchling-Setup-1.6.0.exe below and run it.
+Windows: download Hatchling-Setup-1.6.1.exe below and run it.
 Linux / Raspberry Pi OS (64-bit): open a terminal and run
 curl -fsSL https://raw.githubusercontent.com/HackTheScript001/Hatchling/main/install-linux.sh | bash
 

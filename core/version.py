@@ -1,5 +1,5 @@
 """App version and update source."""
-VERSION = "1.6.0"
+VERSION = "1.6.1"
 
 # GitHub repository releases are checked for updates, e.g. "yourname/hatchling".
 # Leave empty to turn the update check off. Can also be set in Documents\Hatchling\settings.json.
