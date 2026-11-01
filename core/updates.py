@@ -185,30 +185,64 @@ def download(rel: Release, progress: Optional[Callable[[int, int], None]] = None
         return path   # already downloaded earlier
     os.makedirs(download_dir(), exist_ok=True)
     part = path + ".part"
-    req = urllib.request.Request(rel.url, headers={"User-Agent": "Hatchling", "Accept": "application/octet-stream"})
+    if os.path.exists(part):
+        os.remove(part)
+    last = ""
+    # A dropped connection carries on from where it stopped (up to 5 times); a file that still doesn't
+    # match its checksum is downloaded once more from scratch before giving up.
+    for fresh in range(2):
+        for attempt in range(6):
+            have = os.path.getsize(part) if os.path.exists(part) else 0
+            try:
+                done = _fetch(rel, part, have, progress, timeout)
+            except UpdateError as e:
+                last = str(e)
+                continue
+            if done:
+                break
+            last = "the connection dropped part way"
+        else:
+            raise UpdateError(f"download failed - {last}. Check the internet connection and try again")
+        if _sha256(part) == rel.sha256:
+            os.replace(part, path)
+            return path
+        os.remove(part)
+        last = "the download didn't match its checksum"
+    raise UpdateError("the download didn't match its checksum twice, so it was deleted - try again later")
+
+
+def _fetch(rel: Release, part: str, have: int, progress, timeout: float) -> bool:
+    """Appends to `part` from byte `have`. True when the whole file is there."""
+    headers = {"User-Agent": "Hatchling", "Accept": "application/octet-stream"}
+    if have:
+        headers["Range"] = f"bytes={have}-"
+    req = urllib.request.Request(rel.url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r, open(part, "wb") as f:
-            total = int(r.headers.get("Content-Length") or rel.size or 0)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            if have and r.status != 206:      # server ignored the range: start again
+                have = 0
+            length = int(r.headers.get("Content-Length") or 0)
+            total = have + length if length else rel.size
             if total > MAX_INSTALLER:
                 raise UpdateError("the download is unexpectedly large")
-            done = 0
-            while True:
-                chunk = r.read(256 * 1024)
-                if not chunk:
-                    break
-                done += len(chunk)
-                if done > MAX_INSTALLER:
-                    raise UpdateError("the download is unexpectedly large")
-                f.write(chunk)
-                if progress:
-                    progress(done, total)
-    except OSError as e:
-        raise UpdateError(f"download failed ({getattr(e, 'reason', e)})")
-    if _sha256(part) != rel.sha256:
-        os.remove(part)
-        raise UpdateError("the download didn't match its checksum, so it was deleted")
-    os.replace(part, path)
-    return path
+            done = have
+            with open(part, "ab" if have else "wb") as f:
+                while True:
+                    chunk = r.read(256 * 1024)
+                    if not chunk:
+                        break
+                    done += len(chunk)
+                    if done > MAX_INSTALLER:
+                        raise UpdateError("the download is unexpectedly large")
+                    f.write(chunk)
+                    if progress:
+                        progress(done, total)
+    except UpdateError:
+        raise
+    except Exception as e:   # network errors, timeouts, incomplete reads
+        raise UpdateError(f"download interrupted ({getattr(e, 'reason', e)})")
+    expected = rel.size or total
+    return not expected or os.path.getsize(part) >= expected
 
 
 def install(path: str, relaunch: bool = True, show_progress: bool = True):
