@@ -1,8 +1,24 @@
 Beta testing release - thanks for trying Hatchling.
 
-**Download `Hatchling-Setup-1.3.1.exe` below** and run it (it updates your current version in place). Windows may show "Windows protected your PC" because the installer isn't code-signed yet - click **More info**, then **Run anyway**. From 1.3.0 on, Hatchling updates itself.
+**Download `Hatchling-Setup-1.4.0.exe` below** and run it (it updates your current version in place). Windows may show "Windows protected your PC" because the installer isn't code-signed yet - click **More info**, then **Run anyway**. From 1.3.0 on, Hatchling updates itself.
 
-What's new in 1.3.1
+What's new in 1.4.0
+
+New to Hatchling
+- **Setup guide** - on first start Hatchling walks you through finding the adapter, connecting, scanning the car, getting the factory file and making the first backup. Run it again from Settings.
+- **Settings page** - library, updates, Wi-Fi address, adapter speeds and your files in one place. **Night mode now switches straight away.**
+- **Report a problem** (bottom bar or Settings) - sends the activity log, version and adapter to GitHub. Your VIN, Windows user name and email addresses are removed, and you see exactly what's sent first.
+
+In the workshop
+- **Misfire counts** (Fault codes) - the engine's own misfire count for each cylinder, so you can spot a weak coil or plug before a fault code appears (CAN cars, about 2008 on).
+- **Trips & timing** - live mpg, trip average, distance and fuel used, a history of your trips, and a 0-60 mph / 30-70 mph / 0-100 km/h performance timer (track or private road only).
+- **Garage** - every car you've connected to, with a name you choose, its history, backups, factory file and trips.
+
+Behind the scenes
+- Every release is now tested first: GitHub opens Hatchling on a Windows machine, clicks through every screen against the simulator and stops the release if anything crashes.
+- The build can sign Hatchling once a code-signing certificate is added, which removes the "Windows protected your PC" warning.
+
+What was new in 1.3.1
 - **Updating Hatchling window** - click **Update to …** in the bottom bar and Hatchling shows the download progress, then the installer's progress, then reopens on the new version. Nothing opens GitHub. (The download already starts in the background as soon as an update is found, so it's usually ready straight away.)
 
 New in 1.3.0
