@@ -40,7 +40,27 @@ class Release:
 
     @property
     def installer(self) -> bool:
-        return self.url.lower().endswith(".exe")
+        return self.url.lower().endswith((".exe", ".tar.gz"))
+
+
+# ---- Linux / Raspberry Pi: installed by install-linux.sh as
+#   ~/.local/share/hatchling/venv, .../versions/<version>/, .../current -> versions/<version>
+def linux_home() -> str:
+    """The Linux install folder when Hatchling runs from it, otherwise ''."""
+    from .paths import app_dir
+    here = os.path.dirname(os.path.realpath(app_dir()))
+    if os.path.basename(here) == "versions":
+        return os.path.dirname(here)
+    return ""
+
+
+def _asset_for_platform(assets: list):
+    if sys.platform == "win32":
+        return next((a for a in assets if a.get("name", "").lower().endswith(".exe")), None)
+    if sys.platform.startswith("linux") and linux_home():
+        return next((a for a in assets if re.fullmatch(r"hatchling-linux-[\d.]+\.tar\.gz",
+                                                        a.get("name", "").lower())), None)
+    return None
 
 
 def parse_version(v: str) -> Tuple[int, ...]:
@@ -73,7 +93,7 @@ def check(timeout: float = 6.0) -> Optional[Release]:
     if not is_newer(tag):
         return None
     assets = [a for a in data.get("assets", []) if isinstance(a, dict)]
-    exe = next((a for a in assets if a.get("name", "").lower().endswith(".exe")), None)
+    exe = _asset_for_platform(assets)
     page = data.get("html_url", "")
     if not exe:
         return Release(tag.lstrip("v"), page, (data.get("body") or "").strip()[:8000], page=page)
@@ -160,7 +180,10 @@ def download_dir() -> str:
 
 
 def downloaded_path(rel: Release) -> str:
-    return os.path.join(download_dir(), f"Hatchling-Setup-{re.sub(r'[^0-9A-Za-z.]', '', rel.version)}.exe")
+    ver = re.sub(r'[^0-9A-Za-z.]', '', rel.version)
+    if rel.url.lower().endswith(".tar.gz"):
+        return os.path.join(download_dir(), f"Hatchling-linux-{ver}.tar.gz")
+    return os.path.join(download_dir(), f"Hatchling-Setup-{ver}.exe")
 
 
 def _sha256(path: str) -> str:
@@ -171,7 +194,21 @@ def _sha256(path: str) -> str:
     return h.hexdigest()
 
 
+def can_install() -> bool:
+    """Hatchling can update itself here: the Windows installer, or a Linux copy set up by install-linux.sh."""
+    return sys.platform == "win32" or (sys.platform.startswith("linux") and bool(linux_home()))
+
+
 def download(rel: Release, progress: Optional[Callable[[int, int], None]] = None, timeout: float = 30.0) -> str:
+    """Downloads and checks the update. Windows: returns the installer. Linux: unpacks it beside the running
+    version and returns that folder."""
+    path = _download_file(rel, progress, timeout)
+    if path.endswith(".tar.gz"):
+        return prepare_linux(path, rel.version)
+    return path
+
+
+def _download_file(rel: Release, progress: Optional[Callable[[int, int], None]] = None, timeout: float = 30.0) -> str:
     """Downloads the installer next to the other update files and checks it. Only GitHub downloads are
     accepted, and the file must match the checksum GitHub publishes for it. Returns the file path."""
     if not rel.installer:
@@ -245,22 +282,83 @@ def _fetch(rel: Release, part: str, have: int, progress, timeout: float) -> bool
     return not expected or os.path.getsize(part) >= expected
 
 
+def prepare_linux(tarball: str, version: str) -> str:
+    """Unpacks a downloaded Linux release next to the running one and installs any new Python packages.
+    Nothing changes for the running app until install() switches to it. Returns the new folder."""
+    import shutil
+    import subprocess
+    import tarfile
+    home = linux_home()
+    if not home:
+        raise UpdateError("this copy of Hatchling wasn't installed with install-linux.sh")
+    ver = re.sub(r"[^0-9A-Za-z.]", "", version)
+    dest = os.path.join(home, "versions", ver)
+    tmp = dest + ".new"
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp)
+    with tarfile.open(tarball, "r:gz") as tf:
+        for m in tf.getmembers():
+            name = m.name.split("/", 1)[1] if "/" in m.name else ""
+            if not name or name.startswith("/") or ".." in name.split("/") or not (m.isfile() or m.isdir()):
+                continue      # only plain files inside the top folder
+            m.name = name
+            tf.extract(m, tmp)
+    if not os.path.isfile(os.path.join(tmp, "main.py")):
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise UpdateError("the download doesn't contain Hatchling")
+    from .paths import app_dir
+    new_req, old_req = os.path.join(tmp, "requirements.txt"), os.path.join(app_dir(), "requirements.txt")
+    try:
+        same = open(new_req).read() == open(old_req).read()
+    except OSError:
+        same = False
+    if not same:
+        r = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", new_req], capture_output=True,
+                           text=True, timeout=1800)
+        if r.returncode != 0:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise UpdateError("the new version's packages couldn't be installed: " + (r.stderr or "")[-300:])
+    shutil.rmtree(dest, ignore_errors=True)
+    os.replace(tmp, dest)
+    return dest
+
+
 def install(path: str, relaunch: bool = True, show_progress: bool = True):
     """Starts the installer silently (Windows asks once for permission) and returns straight away -
     the caller should then close Hatchling so its files can be replaced. The installer reopens
     Hatchling when it's finished if relaunch is True."""
     # /SILENT shows only the installer's progress window (no questions); /VERYSILENT shows nothing
+    if sys.platform.startswith("linux"):
+        _install_linux(path, relaunch)
+        return
     args = ("/SILENT" if show_progress else "/VERYSILENT") + " /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /SP-"
     if relaunch:
         args += " /RELAUNCH=1"
     log = os.path.join(download_dir(), "install-log.txt")
     args += f' /LOG="{log}"'
     if sys.platform != "win32":
-        raise UpdateError("updates install on Windows only")
+        raise UpdateError("updates install on Windows and Linux only")
     try:
         os.startfile(path, "open", args)   # ShellExecute: shows the Windows permission prompt
     except OSError as e:
         raise UpdateError(f"the installer couldn't start ({e})")
+
+
+def _install_linux(version_dir: str, relaunch: bool):
+    """Points 'current' at the new version (one rename, so it's never half-switched) and starts it."""
+    import subprocess
+    home = linux_home()
+    if not home or not os.path.isfile(os.path.join(version_dir, "main.py")):
+        raise UpdateError("the new version isn't ready")
+    link = os.path.join(home, "current")
+    tmp = link + ".new"
+    if os.path.lexists(tmp):
+        os.remove(tmp)
+    os.symlink(version_dir, tmp)
+    os.replace(tmp, link)
+    if relaunch:
+        subprocess.Popen([sys.executable, os.path.join(link, "main.py")], start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def clean_old(keep: str = ""):
@@ -270,7 +368,7 @@ def clean_old(keep: str = ""):
         return
     for fn in os.listdir(d):
         p = os.path.join(d, fn)
-        if fn.lower().endswith((".exe", ".part")) and p != keep:
+        if fn.lower().endswith((".exe", ".part", ".tar.gz")) and p != keep:
             try:
                 os.remove(p)
             except OSError:

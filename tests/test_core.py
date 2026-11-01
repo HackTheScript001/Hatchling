@@ -169,6 +169,36 @@ fp = updates.download(updates.Release("9.9.7", fbase + "Hatchling-Setup-9.9.7.ex
 with open(fp, "rb") as f:
     check("update resumes after a dropped connection", f.read() == blob and any(calls), str(calls))
 
+# Linux update: unpack beside the running version, then switch 'current' over in one step
+if sys.platform.startswith("linux"):
+    import shutil
+    import subprocess
+    import core.paths as cpaths
+    lhome = tempfile.mkdtemp()
+    old = os.path.join(lhome, "versions", "1.0.0")
+    shutil.copytree(ROOT, old, ignore=shutil.ignore_patterns(".git", "__pycache__", "tests"))
+    os.symlink(old, os.path.join(lhome, "current"))
+    tdir = tempfile.mkdtemp()
+    tball = os.path.join(tdir, "Hatchling-linux-9.9.9.tar.gz")
+    subprocess.run(["tar", "-czf", tball, "--exclude=.git", "--transform", "s,^\\.,hatchling-9.9.9,", "-C", ROOT, "."],
+                   check=True)
+    real_home, real_app = updates.linux_home, cpaths.app_dir
+    updates.linux_home = lambda: lhome
+    cpaths.app_dir = lambda: os.path.join(lhome, "current")
+    try:
+        newdir = updates.prepare_linux(tball, "9.9.9")
+        updates.install(newdir, relaunch=False)
+        check("linux update unpacks and switches", os.path.realpath(os.path.join(lhome, "current")) == newdir and
+              os.path.isfile(os.path.join(lhome, "current", "main.py")))
+    finally:
+        updates.linux_home, cpaths.app_dir = real_home, real_app
+
+from core import garage  # noqa: E402
+
+check("garage starts empty", garage.cars([(VIN, 5.0, 3)], {}) == [])
+g = garage.add({}, VIN, "My Fiesta")
+check("garage lists added cars", [c.name for c in garage.cars([(VIN, 5.0, 3)], g)] == ["My Fiesta"])
+
 check("wish list loads", len(library.wishlist()) >= 5)
 
 from core import vin as vinmod  # noqa: E402

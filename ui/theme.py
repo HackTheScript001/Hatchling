@@ -32,6 +32,10 @@ ACCENT = OK = WARN = DANGER = AMBER = INK = MUTED = FAINT = LINE = LINE_STRONG =
 
 HEAD_FONT = "Bahnschrift"
 BODY_FONT = "Segoe UI"
+# Linux / Raspberry Pi don't have the Windows fonts - these are the nearest common ones
+HEAD_FALLBACK = "'Bahnschrift', 'DejaVu Sans Condensed', 'Noto Sans', sans-serif"
+BODY_FALLBACK = "'Segoe UI', 'Noto Sans', 'DejaVu Sans', 'Liberation Sans', sans-serif"
+COMPACT = False   # small screens (e.g. a Raspberry Pi's 7" display): tighter spacing
 
 
 def apply(dark: bool = False):
@@ -47,7 +51,7 @@ def apply(dark: bool = False):
 def style() -> str:
     t = T
     return f"""
-* {{ font-family: '{BODY_FONT}', sans-serif; font-size: 10pt; color: {t['INK']}; }}
+* {{ font-family: {BODY_FALLBACK}; font-size: {'9pt' if COMPACT else '10pt'}; color: {t['INK']}; }}
 QMainWindow, QWidget#page, QStackedWidget, QDialog {{ background: {t['PAGE']}; }}
 QToolTip {{ background: {t['INK']}; color: {t['PAGE']}; border: none; padding: 5px 8px; }}
 
@@ -57,10 +61,10 @@ QListWidget#nav::item:hover {{ background: {t['SIDEBAR_SEL']}; }}
 QListWidget#nav::item:selected {{ background: {t['SIDEBAR_SEL']}; color: #FFFFFF; border-left: 4px solid {t['AMBER']}; }}
 QListWidget#nav::item:disabled {{ color: {t['SIDEBAR_HEAD']}; padding: 16px 18px 4px 18px; }}
 
-QLabel#title {{ font-family: '{HEAD_FONT}'; font-size: 20pt; font-weight: 600; }}
-QLabel#carname {{ font-family: '{HEAD_FONT}'; font-size: 30pt; font-weight: 600; }}
+QLabel#title {{ font-family: {HEAD_FALLBACK}; font-size: {'16pt' if COMPACT else '20pt'}; font-weight: 600; }}
+QLabel#carname {{ font-family: {HEAD_FALLBACK}; font-size: {'22pt' if COMPACT else '30pt'}; font-weight: 600; }}
 QLabel#subtle {{ color: {t['MUTED']}; }}
-QLabel#figure {{ font-family: '{HEAD_FONT}'; font-size: 15pt; }}
+QLabel#figure {{ font-family: {HEAD_FALLBACK}; font-size: 15pt; }}
 
 QFrame#card {{ background: {t['PANEL']}; border: 1px solid {t['LINE']}; border-radius: 4px; }}
 QFrame#plain {{ background: transparent; border: none; border-top: 1px solid {t['LINE']}; }}
@@ -94,7 +98,7 @@ QHeaderView::section {{ background: {t['PANEL_ALT']}; border: none; border-botto
 QTextBrowser {{ background: {t['PANEL']}; border: 1px solid {t['LINE']}; border-radius: 3px; padding: 6px; }}
 
 QPlainTextEdit#log {{ background: {t['LOG_BG']}; border: none; border-top: 1px solid {t['LINE']}; border-radius: 0;
-               font-family: Consolas, monospace; font-size: 9pt; color: {t['LOG_INK']}; }}
+               font-family: Consolas, 'DejaVu Sans Mono', monospace; font-size: 9pt; color: {t['LOG_INK']}; }}
 QProgressBar {{ background: {t['LINE']}; border: none; border-radius: 2px; max-height: 6px; }}
 QProgressBar::chunk {{ background: {t['ACCENT']}; border-radius: 2px; }}
 QCheckBox {{ spacing: 8px; }}

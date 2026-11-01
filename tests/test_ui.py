@@ -270,12 +270,18 @@ w.pages["History"].select_vin(s.vin)
 gp = w.pages["Garage"]
 w.go("Garage")
 gp.render()
-if gp.tbl.rowCount() == 0:
-    problems.append("[garage] the simulator car isn't in the garage")
+if gp.cars or not gp.empty.isVisible():
+    problems.append("[garage] the garage should start empty")
+if gp.add_card.isVisible():
+    problems.append("[garage] offered to add a simulator car")
+gp.add_car()      # the owner adds the connected car
+if len(gp.cars) != 1:
+    problems.append("[garage] adding the connected car didn't work")
 else:
     gp.tbl.selectRow(0)
     gp.rename()
     gp.open_history()
+    gp.forget()
 w.go("Library")
 wl = A.WishListDialog(w, s)
 if wl.items:

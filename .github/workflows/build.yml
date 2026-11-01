@@ -1,4 +1,5 @@
-# Builds Hatchling.exe and the installer on Windows.
+# Tests Hatchling on Windows and Linux (Intel and ARM / Raspberry Pi), then builds the Windows installer and
+# the Linux release, and publishes them together.
 #  - Every push / manual run: installer uploaded as a build artifact.
 #  - The first build of a new version (VERSION in core/version.py) is published as a GitHub
 #    release with its tag, e.g. v1.0.1, plus a .sha256 checksum - the in-app updater downloads
@@ -20,7 +21,71 @@ permissions:
   contents: write
 
 jobs:
+  tests:
+    name: Tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Qt's system libraries (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3 fonts-dejavu-core
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Core tests (simulator)
+        run: python tests/test_core.py
+      - name: Screen tests (every page against the simulator)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python tests/test_ui.py
+
+  linux-installer:
+    name: Linux installer (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22.04 is close to Raspberry Pi OS Bookworm (Python 3.10/3.11, older glibc); the ARM runners are Pi-like
+        os: [ubuntu-22.04, ubuntu-22.04-arm, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run install-linux.sh with the system Python
+        run: ./install-linux.sh
+      - name: The installed copy opens every screen
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          test -x "$HOME/.local/bin/hatchling"
+          test -L "$HOME/.local/share/hatchling/current"
+          "$HOME/.local/share/hatchling/venv/bin/python" tests/test_ui.py
+      - name: Uninstall
+        run: ./install-linux.sh --uninstall && test ! -e "$HOME/.local/share/hatchling"
+
+  linux-package:
+    needs: [tests, linux-installer]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pack the Linux release
+        run: |
+          v=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' core/version.py)
+          mkdir -p dist
+          git archive --format=tar.gz --prefix="hatchling-$v/" -o "dist/Hatchling-linux-$v.tar.gz" HEAD
+          cp "dist/Hatchling-linux-$v.tar.gz" dist/Hatchling-linux.tar.gz
+          cd dist && for f in *.tar.gz; do sha256sum "$f" > "$f.sha256"; done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+
   build:
+    needs: [tests, linux-installer]
     runs-on: windows-latest
     env:
       HAS_CERT: ${{ secrets.SIGN_PFX != '' }}
@@ -33,14 +98,6 @@ jobs:
 
       - name: Install dependencies
         run: python -m pip install -r requirements.txt pyinstaller
-
-      - name: Core tests (simulator)
-        run: python tests/test_core.py
-
-      - name: Screen tests (every page against the simulator)
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: python tests/test_ui.py
 
       - name: Read version
         id: ver
@@ -94,26 +151,39 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           Remove-Item $pfx
 
+      - name: Checksum
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist/Hatchling-Setup-*.exe | Select-Object -First 1
+          "$((Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower())  $($exe.Name)" | Set-Content -NoNewline -Encoding ascii "$($exe.FullName).sha256"
+
       - uses: actions/upload-artifact@v4
         with:
-          name: Hatchling-Setup-${{ steps.ver.outputs.version }}
-          path: dist/Hatchling-Setup-*.exe
+          name: windows
+          path: dist/Hatchling-Setup-*
 
-      - name: Publish release (first build of a new version)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        shell: pwsh
+  publish:
+    # the first build of a new version on main becomes the release (Windows installer + Linux files)
+    needs: [build, linux-package]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          VER: ${{ steps.ver.outputs.version }}
         run: |
-          gh release view "v$env:VER" --repo $env:GITHUB_REPOSITORY *> $null
-          if ($LASTEXITCODE -eq 0) { Write-Host "Release v$env:VER already exists - nothing to publish."; exit 0 }
-          $exe = Get-ChildItem dist/Hatchling-Setup-*.exe | Select-Object -First 1
-          if (-not $exe) { Write-Error "Installer not found"; exit 1 }
-          # checksum next to the installer - the in-app updater checks every download against it
-          $sum = "$($exe.FullName).sha256"
-          "$((Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower())  $($exe.Name)" | Set-Content -NoNewline -Encoding ascii $sum
-          gh release create "v$env:VER" $exe.FullName $sum --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA `
-            --title "Hatchling $env:VER" --notes-file RELEASE_NOTES.md
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          Write-Host "Published https://github.com/$env:GITHUB_REPOSITORY/releases/tag/v$env:VER"
+          v=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' core/version.py)
+          if gh release view "v$v" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v$v already exists - nothing to publish."; exit 0
+          fi
+          ls -l dist
+          gh release create "v$v" dist/Hatchling-Setup-*.exe dist/Hatchling-Setup-*.exe.sha256 \
+            dist/Hatchling-linux-*.tar.gz dist/Hatchling-linux-*.tar.gz.sha256 \
+            dist/Hatchling-linux.tar.gz dist/Hatchling-linux.tar.gz.sha256 \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Hatchling $v" --notes-file RELEASE_NOTES.md
+          echo "Published https://github.com/$GITHUB_REPOSITORY/releases/tag/v$v"

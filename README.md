@@ -2,7 +2,17 @@
 
 You heard of Forscan now welcome to Hatchling
 
-**[Download the latest version](https://github.com/HackTheScript001/Hatchling/releases/latest)** - run `Hatchling-Setup-<version>.exe`.
+**[Download the latest version](https://github.com/HackTheScript001/Hatchling/releases/latest)** - on Windows run `Hatchling-Setup-<version>.exe`.
+
+**Linux and Raspberry Pi OS (64-bit)** - open a terminal and run:
+
+```
+curl -fsSL https://raw.githubusercontent.com/HackTheScript001/Hatchling/main/install-linux.sh | bash
+```
+
+Add `-s -- --autostart` after `bash` to have it open full screen when the Pi starts. Remove it with
+`~/.local/share/hatchling/current/install-linux.sh --uninstall`. USB adapters show as `/dev/ttyUSB0`;
+for a Bluetooth adapter, pair it and run `sudo rfcomm bind 0 <adapter address>` once.
 
 ![Hatchling](assets/logo.png)
 
