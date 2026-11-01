@@ -1,0 +1,19 @@
+{
+  "id": "fiesta-mk7-sas-calibration",
+  "name": "Steering angle sensor calibration",
+  "category": "Steering & brakes",
+  "description": "Re-centres the steering angle sensor after wheel alignment, steering work or a new sensor. Stops the stability control warning light coming on.",
+  "vehicle": "Ford Fiesta Mk7 (2008-2017)",
+  "verified": false,
+  "needs_values": true,
+  "source": "Waiting for the commands to be found on a real car",
+  "bus": "HS",
+  "module": "0x000",
+  "module_label": "PSCM / ABS",
+  "preconditions": [
+    "Car on level ground",
+    "Wheels pointing straight ahead",
+    "Engine off, ignition on"
+  ],
+  "steps": []
+}

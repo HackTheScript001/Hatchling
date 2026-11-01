@@ -9,6 +9,7 @@ Talks plain ELM327 AT commands over a serial (USB) port. Handles:
 from __future__ import annotations
 
 import re
+import socket
 import threading
 import time
 from typing import Callable, List, Optional
@@ -56,9 +57,32 @@ def describe_ports() -> List[tuple]:
     out = []
     for p in list_ports.comports():
         chip = USB_CHIPS.get((p.vid, p.pid)) if p.vid is not None else None
-        name = chip[0] if chip else (p.description if p.description and p.description != "n/a" else "")
+        desc = p.description if p.description and p.description != "n/a" else ""
+        if "bluetooth" in desc.lower():
+            # Windows makes two COM ports per paired Bluetooth adapter - the 'outgoing' one is the one to use
+            name = "Bluetooth adapter (if it doesn't answer, try the other Bluetooth COM port)"
+        else:
+            name = chip[0] if chip else desc
         out.append((p.device, f"{p.device} - {name}" if name else p.device))
     return out
+
+
+WIFI_DEFAULT = "192.168.0.10:35000"   # what most Wi-Fi ELM327 adapters use
+
+
+def parse_wifi(addr: str) -> tuple:
+    addr = (addr or "").strip().removeprefix("tcp://")
+    m = re.fullmatch(r"([A-Za-z0-9.-]{1,253}):(\d{1,5})", addr)
+    if not m or not 0 < int(m.group(2)) < 65536:
+        raise ElmError("Enter the Wi-Fi adapter's address like 192.168.0.10:35000")
+    return m.group(1), int(m.group(2))
+
+
+def open_transport(port: str, baud: int = 38400):
+    """A serial port (USB or Bluetooth) or tcp://host:port for a Wi-Fi adapter."""
+    if port.startswith("tcp://"):
+        return TcpTransport(*parse_wifi(port))
+    return SerialTransport(port, baud)
 
 
 class SerialTransport:
@@ -92,6 +116,59 @@ class SerialTransport:
         try:
             self.ser.close()
         except Exception:
+            pass
+
+
+class TcpTransport:
+    """Wi-Fi ELM327 adapters: the same text protocol over a TCP connection. Join the adapter's Wi-Fi
+    network on the PC first."""
+
+    def __init__(self, host: str, port: int, timeout: float = 5.0):
+        try:
+            self.sock = socket.create_connection((host, port), timeout=timeout)
+        except OSError as e:
+            raise ElmError(f"Couldn't reach the Wi-Fi adapter at {host}:{port} - join its Wi-Fi network first ({e})")
+        self.sock.settimeout(0.05)
+
+    def _drain(self):
+        try:
+            while self.sock.recv(4096):
+                pass
+        except OSError:
+            pass
+
+    def send(self, cmd: str, timeout: float = 2.0) -> List[str]:
+        self._drain()
+        try:
+            self.sock.sendall((cmd + "\r").encode("ascii"))
+        except OSError as e:
+            raise ElmError(f"Wi-Fi adapter connection lost ({e})")
+        buf = b""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                chunk = self.sock.recv(4096)
+            except socket.timeout:
+                continue
+            except OSError as e:
+                raise ElmError(f"Wi-Fi adapter connection lost ({e})")
+            if not chunk:
+                raise ElmError("The Wi-Fi adapter closed the connection")
+            buf += chunk
+            if b">" in buf:
+                break
+        else:
+            raise ElmError(f"Adapter did not answer '{cmd}' in {timeout:.1f}s")
+        text = buf.decode("ascii", "ignore").replace(">", "")
+        lines = [l.strip() for l in re.split(r"[\r\n]+", text) if l.strip()]
+        if lines and lines[0].replace(" ", "").upper() == cmd.replace(" ", "").upper():
+            lines = lines[1:]
+        return lines
+
+    def close(self):
+        try:
+            self.sock.close()
+        except OSError:
             pass
 
 
@@ -152,6 +229,7 @@ class ELM327:
         self._timeout_ms = None
         self.log = log or (lambda s: None)
         self.trace = False
+        self.chip = "ELM"
 
     # ---- low level -------------------------------------------------
     def cmd(self, c: str, timeout: float = 2.0) -> List[str]:
@@ -175,6 +253,15 @@ class ELM327:
             self.version = next((l for l in r if "ELM" in l.upper()), "unknown")
             for c in ("ATE0", "ATL0", "ATS1", "ATH1", "ATCAF1", "ATAT1"):
                 self._ok(c)
+            # OBDLink and other STN-chip adapters answer STI with their real name (they all say ELM327 to ATZ)
+            try:
+                sti = self.cmd("STI", timeout=1.0)
+            except ElmError:
+                sti = []
+            name = next((l for l in sti if l.upper().startswith(("STN", "OBDLINK"))), "")
+            self.chip = "STN" if name else "ELM"
+            if name:
+                self.version = f"{name} (ELM327 compatible)"
             self.set_bus(HS, force=True)
             self.log(f"Adapter ready: {self.version}")
 

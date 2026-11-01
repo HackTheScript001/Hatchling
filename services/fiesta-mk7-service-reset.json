@@ -1,0 +1,17 @@
+{
+  "id": "fiesta-mk7-service-reset",
+  "name": "Service reminder reset",
+  "category": "Servicing",
+  "description": "Resets the oil service reminder on the dashboard after a service.",
+  "vehicle": "Ford Fiesta Mk7 (2008-2017)",
+  "verified": false,
+  "needs_values": true,
+  "source": "Waiting for the commands to be found on a real car",
+  "bus": "HS",
+  "module": "0x000",
+  "module_label": "IPC - Instrument cluster",
+  "preconditions": [
+    "Ignition on, engine off"
+  ],
+  "steps": []
+}

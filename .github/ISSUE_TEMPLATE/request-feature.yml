@@ -1,0 +1,21 @@
+name: Request a feature
+description: Ask for a car feature (or an app feature) - others vote with a thumbs up
+title: "Request: "
+labels: ["feature-request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe what you'd like Hatchling to switch on, or what you'd like the app to do. Everyone votes by adding a
+        👍 reaction to the request - Hatchling's Community page shows the most wanted first.
+  - type: input
+    id: car
+    attributes:
+      label: Car
+      placeholder: 2015 Ford Fiesta 1.0 EcoBoost
+  - type: textarea
+    id: what
+    attributes:
+      label: What would you like?
+    validations:
+      required: true

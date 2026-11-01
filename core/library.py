@@ -138,6 +138,73 @@ def update(base: Optional[str] = None) -> dict:
     return d
 
 
+# ---- extra library files: fault code tips and the wish list ---------------------------
+EXTRA_FILES = ("code-tips.json", "wishlist.json")
+
+
+def update_extras(base: Optional[str] = None) -> List[str]:
+    """Downloads the optional library files (tips and the wish list). Missing ones are skipped."""
+    got = []
+    for name in EXTRA_FILES:
+        try:
+            raw = _fetch(_raw_url(name, base))
+            d = json.loads(raw)
+        except (LibraryError, ValueError):
+            continue
+        if isinstance(d, dict) and d.get("schema") == 1:
+            os.makedirs(CACHE, exist_ok=True)
+            with open(os.path.join(CACHE, name), "wb") as f:
+                f.write(raw)
+            got.append(name)
+    return got
+
+
+def _extra(name: str) -> dict:
+    options = [d for d in (_read_json(os.path.join(CACHE, name)), _read_json(os.path.join(BUNDLED, name)))
+               if isinstance(d, dict) and d.get("schema") == 1]
+    return max(options, key=lambda d: d.get("generated", "")) if options else {}
+
+
+def code_tips(code: str) -> List[dict]:
+    """What fixed this fault code on other people's cars: [{text, car, issue}]."""
+    tips = _extra("code-tips.json").get("tips", {})
+    out = tips.get(code.split("-")[0].upper(), []) if isinstance(tips, dict) else []
+    return [t for t in out if isinstance(t, dict) and t.get("text")][:20]
+
+
+def wishlist() -> List[dict]:
+    items = _extra("wishlist.json").get("items", [])
+    return [i for i in items if isinstance(i, dict) and i.get("id") and i.get("name")]
+
+
+def _issue_link(template: str, title: str, **fields) -> str:
+    r = repo()
+    if not r:
+        raise LibraryError("No library repository set")
+    return f"https://github.com/{r}/issues/new?" + urlencode({"template": template, "title": title[:120],
+                                                              **{k: v for k, v in fields.items() if v}})
+
+
+def code_search_link(code: str) -> str:
+    r = repo()
+    if not r:
+        raise LibraryError("No library repository set")
+    return f"https://github.com/{r}/issues?" + urlencode({"q": code.split("-")[0].upper()})
+
+
+def code_fix_link(code: str, car: str = "") -> str:
+    return _issue_link("code-fix.yml", f"Fix for {code.split('-')[0].upper()}", code=code.split("-")[0].upper(),
+                       car=car)
+
+
+def find_feature_link(item: dict, car: str = "") -> str:
+    return _issue_link("find-feature.yml", f"Looking for: {item.get('name', '')}", wish=item.get("id", ""), car=car)
+
+
+def request_feature_link(car: str = "", what: str = "") -> str:
+    return _issue_link("request-feature.yml", f"Request: {what}", car=car)
+
+
 def _safe_path(p: str) -> str:
     if not isinstance(p, str) or not re.match(r"^features/[a-z]+/[a-z0-9-]+\.json$", p):
         raise LibraryError("The library index has a bad file path")

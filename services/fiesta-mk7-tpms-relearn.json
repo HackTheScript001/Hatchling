@@ -1,0 +1,17 @@
+{
+  "id": "fiesta-mk7-tpms-relearn",
+  "name": "Tyre pressure sensor relearn",
+  "category": "Tyres",
+  "description": "Teaches the car the tyre pressure sensors after new sensors or swapping wheels. Many Mk7 Fiestas use a system that works from the ABS wheel speeds instead of sensors - that kind is reset from the dashboard menu, not here.",
+  "vehicle": "Ford Fiesta Mk7 (2008-2017)",
+  "verified": false,
+  "needs_values": true,
+  "source": "Waiting for the commands to be found on a real car",
+  "bus": "HS",
+  "module": "0x000",
+  "module_label": "BCM - Body",
+  "preconditions": [
+    "Tyres set to the pressures on the door pillar sticker"
+  ],
+  "steps": []
+}

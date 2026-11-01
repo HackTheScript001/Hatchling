@@ -1,7 +1,8 @@
 # Builds Hatchling.exe and the installer on Windows.
 #  - Every push / manual run: installer uploaded as a build artifact.
 #  - The first build of a new version (VERSION in core/version.py) is published as a GitHub
-#    release with its tag, e.g. v1.0.1 - the in-app update check reads these. To release an
+#    release with its tag, e.g. v1.0.1, plus a .sha256 checksum - the in-app updater downloads
+#    the installer, checks it against the checksum and installs it silently. To release an
 #    update: bump VERSION, update RELEASE_NOTES.md, push.
 name: Build Hatchling installer
 
@@ -69,7 +70,10 @@ jobs:
           if ($LASTEXITCODE -eq 0) { Write-Host "Release v$env:VER already exists - nothing to publish."; exit 0 }
           $exe = Get-ChildItem dist/Hatchling-Setup-*.exe | Select-Object -First 1
           if (-not $exe) { Write-Error "Installer not found"; exit 1 }
-          gh release create "v$env:VER" $exe.FullName --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA `
+          # checksum next to the installer - the in-app updater checks every download against it
+          $sum = "$($exe.FullName).sha256"
+          "$((Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower())  $($exe.Name)" | Set-Content -NoNewline -Encoding ascii $sum
+          gh release create "v$env:VER" $exe.FullName $sum --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA `
             --title "Hatchling $env:VER" --notes-file RELEASE_NOTES.md
           if ($LASTEXITCODE -ne 0) { exit 1 }
           Write-Host "Published https://github.com/$env:GITHUB_REPOSITORY/releases/tag/v$env:VER"

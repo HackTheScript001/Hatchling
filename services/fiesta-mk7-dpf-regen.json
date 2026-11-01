@@ -1,0 +1,19 @@
+{
+  "id": "fiesta-mk7-dpf-regen",
+  "name": "Diesel particulate filter (DPF) regeneration",
+  "category": "Engine",
+  "description": "Makes the engine burn off the soot in the DPF while the car is stationary. Diesel only. The exhaust gets very hot - outdoors, away from anything that can burn, and never under the car while it runs.",
+  "vehicle": "Ford Fiesta Mk7 (2008-2017)",
+  "verified": false,
+  "needs_values": true,
+  "source": "Waiting for the commands to be found on a real car",
+  "bus": "HS",
+  "module": "0x000",
+  "module_label": "PCM - Powertrain",
+  "preconditions": [
+    "Diesel engine only",
+    "Engine warm, at least a quarter tank of fuel",
+    "Outdoors, bonnet up, nothing near the exhaust"
+  ],
+  "steps": []
+}

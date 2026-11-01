@@ -82,12 +82,14 @@ def vin_details(vin: str, year: Optional[int] = None, base: str = VPIC) -> Dict[
 
 
 # ---- community feed (GitHub issues: feedback, shared features, factory files) ------------
-def community_posts(repo: str, base: str = GITHUB_API, limit: int = 30) -> List[dict]:
-    """Latest issues on the repo (no account needed). Pull requests are left out."""
+def community_posts(repo: str, base: str = GITHUB_API, limit: int = 30, label: str = "") -> List[dict]:
+    """Latest issues on the repo (no account needed). Pull requests are left out. With a label, only open
+    issues with it, most voted first."""
     if not repo:
         raise OnlineError("no repository set")
-    items = _get_json(f"{base}/repos/{repo}/issues?state=all&sort=updated&direction=desc&per_page={int(limit)}",
-                      headers={"Accept": "application/vnd.github+json"})
+    q = (f"state=open&labels={quote(label)}" if label else "state=all") + \
+        f"&sort=updated&direction=desc&per_page={int(limit)}"
+    items = _get_json(f"{base}/repos/{repo}/issues?{q}", headers={"Accept": "application/vnd.github+json"})
     if not isinstance(items, list):
         raise OnlineError("unexpected reply from GitHub")
     out = []
@@ -102,13 +104,18 @@ def community_posts(repo: str, base: str = GITHUB_API, limit: int = 30) -> List[
             "comments": int(it.get("comments", 0) or 0),
             "updated": str(it.get("updated_at", ""))[:10],
             "by": str((it.get("user") or {}).get("login", "")),
+            "votes": int(((it.get("reactions") or {}).get("+1")) or 0),
         })
+    if label:
+        out.sort(key=lambda p: -p["votes"])
     return out
 
 
 def post_kind(labels: List[str]) -> str:
     for label, name in (("feedback", "Feedback"), ("feature-submission", "Shared feature"),
-                        ("factory-file", "Factory file"), ("confirmation", "Works on my car")):
+                        ("factory-file", "Factory file"), ("confirmation", "Works on my car"),
+                        ("feature-request", "Request"), ("code-fix", "Fault code fix"),
+                        ("finding-feature", "Looking for a feature")):
         if label in labels:
             return name
     return "Post"

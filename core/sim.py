@@ -117,6 +117,10 @@ class SimPcm(SimEcu):
                 0x10: [0, int(300 + 200 * math.sin(t / 2)) & 0xFF],
                 0x42: [0x36, 0xB0 + random.randint(0, 15)],
                 0x2F: [150],
+                0x01: [0x82, 0x07, 0xE5, 0x04],   # warning light on, 2 codes, evap test not finished
+                0x30: [12],
+                0x31: [0x00, 0xF0],
+                0x21: [0x00, 0x2A],
             }
             if req[1] in vals:
                 return bytes([0x41, req[1]] + vals[req[1]])
@@ -226,6 +230,12 @@ class SimTransport:
         if mode == 0x01:
             r = pcm.handle(data) if data[1] != 0x00 else bytes([0x41, 0x00, 0xBE, 0x3E, 0xB8, 0x11])
             return [self._hex(r)] if r[0] == 0x41 else ["NO DATA"]
+        if mode == 0x02 and len(data) >= 3:
+            if data[1] == 0x02:
+                raw = pcm.dtcs[0][0][:2] if pcm.dtcs else b"\0\0"
+                return [self._hex(bytes([0x42, 0x02, 0x00]) + raw)]
+            r = pcm.handle(bytes([0x01, data[1]]))
+            return [self._hex(bytes([0x42, data[1], 0x00]) + r[2:])] if r[0] == 0x41 and pcm.dtcs else ["NO DATA"]
         if mode in (0x03, 0x07):
             codes = [raw[:2] for raw, st in pcm.dtcs if (st & 0x08) == (0x08 if mode == 0x03 else 0)] \
                 if mode == 0x03 else []
@@ -283,7 +293,10 @@ class SimTransport:
             elif a == "CAF1":
                 self.caf = True
             return ["OK"]
-        data = bytes.fromhex(c)
+        try:
+            data = bytes.fromhex(c)
+        except ValueError:
+            return ["?"]       # unknown command, like a real ELM327 (e.g. STI on a non-OBDLink adapter)
         if self.obd_mode:
             return (["SEARCHING..."] if data[:2] == b"\x01\x00" else []) + self._obd(data)
         ecu = self.car.get(self.bus, {}).get(self.header)
@@ -307,3 +320,29 @@ class SimTransport:
                 return self._frames(rx, ecu.handle(data[1:1 + (data[0] & 0xF)]))
             return ["NO DATA"]
         return self._frames(rx, ecu.handle(data))
+
+
+def sample_factory():
+    """A factory As-Built file for the simulated Fiesta, as Ford would supply it (5 data bytes per line plus
+    the checksum byte). It matches the simulator except auto headlights, which was 'off at the factory',
+    so Changes since factory has something to show."""
+    from .factory import FactoryData
+    car = build_car()
+    vin = "WF0DXXGAKDFA12345"
+    seen = {}
+    for bus in (HS, MS):
+        for addr, ecu in car[bus].items():
+            seen.setdefault(addr, ecu)
+    lines = {}
+    for addr, ecu in seen.items():
+        for did, data in ecu.asbuilt.items():
+            data = bytearray(data)
+            if addr == 0x726 and did == 0xDE00:
+                data[1] &= ~0x80 & 0xFF          # auto headlights off when built
+            block = did - 0xDE00 + 1
+            for i in range(0, len(data), 5):
+                chunk = bytes(data[i:i + 5])
+                line = i // 5 + 1
+                cs = (sum(chunk) + (addr >> 8) + (addr & 0xFF) + block + line) & 0xFF
+                lines[(addr, block, line)] = chunk + bytes([cs])
+    return FactoryData(vin, lines, "Simulator sample factory file", "built in")
