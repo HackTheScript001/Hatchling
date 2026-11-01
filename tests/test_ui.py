@@ -158,6 +158,13 @@ idle()
 if "FeatureFinderDialog" not in opened:
     problems.append("[modules] changes since factory didn't open the finder")
 
+step("create features from my car (guided)")
+before = opened.count("FeatureFinderDialog")
+s.open_create_features()
+idle(60)
+if opened.count("FeatureFinderDialog") == before:
+    problems.append("[create] the guided flow didn't show the changes to name")
+
 step("fault codes, details, MOT check, misfires")
 dp = w.pages["Fault codes"]
 w.go("Fault codes")
@@ -219,12 +226,6 @@ if fp.feature() and fp.feature().id == "sim-auto-lights-demo":
 else:
     problems.append("[features] couldn't select the auto headlights demo")
 
-step("create features from my car (guided)")
-before = opened.count("FeatureFinderDialog")
-s.open_create_features()
-idle(60)
-if opened.count("FeatureFinderDialog") == before:
-    problems.append("[create] the guided flow didn't show the changes to name")
 w.go("Features")
 fp.set_tech(True)
 fp.set_tech(False)
