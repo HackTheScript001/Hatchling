@@ -5977,7 +5977,7 @@ class MainWindow(QMainWindow):
                         self.s.log(f"Redraw after colour change: {e}")
         self.pages["Home"].refresh()
         self.on_conn(self.s.connected)
-        for w in QApplication.allWidgets():
+        for w in QApplication.topLevelWidgets():   # windows repaint their children with the new colours
             w.update()
 
     def open_setup(self):
