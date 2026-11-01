@@ -134,6 +134,41 @@ wn = updates.whats_new(notes, "2.1", "1.9")
 check("update notes: every newer version, no install text", "Version 2.1" in wn and "A thing" in wn and
       "Download" not in wn and "Intro" not in wn)
 check("update notes: formatted", "<b>B</b>" in updates.notes_html(wn) and "**" not in updates.notes_html(wn))
+# a connection that drops half way: the updater must carry on with a range request
+blob = os.urandom(300000)
+blob_sha = hashlib.sha256(blob).hexdigest()
+calls = []
+
+
+class Flaky(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        rng = self.headers.get("Range")
+        calls.append(rng)
+        if rng:
+            start = int(rng.split("=")[1].split("-")[0])
+            self.send_response(206)
+            self.send_header("Content-Length", str(len(blob) - start))
+            self.end_headers()
+            self.wfile.write(blob[start:])
+        else:
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(blob)))
+            self.end_headers()
+            self.wfile.write(blob[:120000])   # then hang up
+            self.close_connection = True
+
+    def log_message(self, *a):
+        pass
+
+
+fs = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Flaky)
+threading.Thread(target=fs.serve_forever, daemon=True).start()
+fbase = f"http://127.0.0.1:{fs.server_address[1]}/"
+updates.GITHUB_HOSTS = (fbase,)
+fp = updates.download(updates.Release("9.9.7", fbase + "Hatchling-Setup-9.9.7.exe", "", blob_sha, len(blob)))
+with open(fp, "rb") as f:
+    check("update resumes after a dropped connection", f.read() == blob and any(calls), str(calls))
+
 check("wish list loads", len(library.wishlist()) >= 5)
 
 from core import vin as vinmod  # noqa: E402

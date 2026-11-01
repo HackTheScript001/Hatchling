@@ -1,3 +1,6 @@
+What's new in 1.5.2
+- Updates download more reliably: if the connection drops part way, Hatchling carries on from where it stopped and retries by itself, instead of failing the checksum check.
+
 What's new in 1.5.1
 - The update window now shows just what's new in the version you're getting, neatly formatted, instead of the raw release text cut off part way.
 
@@ -54,7 +57,7 @@ Adapters and fixes
 - The Simulator has its own factory file, so you can try **Changes since factory** without a car.
 
 How to install
-Hatchling updates itself: click Update in the bottom bar. For a fresh install, download Hatchling-Setup-1.5.1.exe below and run it. Windows may show "Windows protected your PC" because the installer isn't code-signed yet - click More info, then Run anyway.
+Hatchling updates itself: click Update in the bottom bar. For a fresh install, download Hatchling-Setup-1.5.2.exe below and run it. Windows may show "Windows protected your PC" because the installer isn't code-signed yet - click More info, then Run anyway.
 
 **Use at your own risk.** Hatchling writes to your car's modules. Keep a battery charger connected when making changes, and import your factory file before changing anything.
 
