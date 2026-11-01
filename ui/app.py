@@ -5836,7 +5836,7 @@ class MainWindow(QMainWindow):
             ("Workshop", [("Fault codes", "Fault codes", DtcPage), ("Live data", "Live data", LivePage),
                           ("Dashboard", "Gauges", DashboardPage), ("Features", "Features", FeaturesPage),
                           ("Library", "Feature library", LibraryPage), ("Modules", "Modules", ModulesPage),
-                          ("Service", "Service jobs", ServicePage), ("Configuration", "Module settings", AsBuiltPage),
+                          ("Configuration", "Module settings", AsBuiltPage), ("Service", "Service jobs", ServicePage),
                           ("Trips", "Trips & timing", TripsPage), ("History", "History", HistoryPage)]),
             ("Setup", [("Connect", "Connection", ConnectPage), ("Garage", "Garage", GaragePage),
                        ("Community", "Community", CommunityPage), ("Settings", "Settings", SettingsPage)]),

@@ -1,3 +1,6 @@
+What's new in 1.6.2
+- Module settings now sits right under Modules in the sidebar.
+
 What's new in 1.6.1
 - Garage: the simulator's cars can be added too (marked "simulator"), and the empty garage page no longer has big gaps.
 
@@ -66,7 +69,7 @@ Adapters and fixes
 
 How to install
 Hatchling updates itself: click Update in the bottom bar.
-Windows: download Hatchling-Setup-1.6.1.exe below and run it.
+Windows: download Hatchling-Setup-1.6.2.exe below and run it.
 Linux / Raspberry Pi OS (64-bit): open a terminal and run
 curl -fsSL https://raw.githubusercontent.com/HackTheScript001/Hatchling/main/install-linux.sh | bash
 
