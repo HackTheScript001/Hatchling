@@ -351,7 +351,7 @@ class Page(QWidget):
         self.setObjectName("page")
         self.s = s
         self.root = QVBoxLayout(self)
-        self.root.setContentsMargins(26, 22, 26, 18)
+        self.root.setContentsMargins(*((12, 10, 12, 8) if theme.COMPACT else (26, 22, 26, 18)))
         self.root.setSpacing(12)
         self.root.addWidget(page_header(title, subtitle))
 
@@ -627,6 +627,15 @@ class ConnectPage(Page):
                 "which one under 'Other devices').")
             self.info.setOpenExternalLinks(True)
 
+    def offer_garage(self):
+        if not self.s.connected:
+            return
+        car = self.s.vin_info.summary if self.s.vin_info else "this car"
+        if QMessageBox.question(self, "Add to my garage", f"Add <b>{html.escape(car)}</b> to your garage?<br><br>"
+                                "Your garage keeps each car's history, backups and trips together.") == QMessageBox.Yes:
+            self.s.go("Garage")
+            self.s.window.pages["Garage"].add_car()
+
     def selected_profile(self) -> Optional[vehicles.Profile]:
         pid = self.vehicle.currentData()
         return next((p for p in self.s.profiles if p.id == pid), None)
@@ -771,6 +780,12 @@ class ConnectPage(Page):
                      {"voltage": v, "profile": s.profile.id if s.profile else None, "link": link})
             s.connected_changed.emit(True)
             s.bus_changed.emit(elm.bus)
+            cfg2 = library.settings()
+            if (not sim and s.vin and s.vin not in (cfg2.get("garage") or {})
+                    and s.vin not in cfg2.get("garage_asked", [])):
+                cfg2.setdefault("garage_asked", []).append(s.vin)
+                library.save_settings(cfg2)
+                QTimer.singleShot(400, self.offer_garage)
 
         def err(e):
             self.btn.setEnabled(True)
@@ -1375,7 +1390,7 @@ def save_pdf(doc_html: str, path: str):
     writer.setResolution(110)
     writer.setTitle("Car health report")
     doc = QTextDocument()
-    doc.setDefaultStyleSheet("body{font-family:'Segoe UI',Arial;font-size:10pt;color:#1b2430}"
+    doc.setDefaultStyleSheet("body{font-family:'Segoe UI','Noto Sans','DejaVu Sans',Arial;font-size:10pt;color:#1b2430}"
                              "h1{font-size:18pt} h2{font-size:13pt;margin-top:14px} th{background:#eef2f6}"
                              "td,th{border-color:#ccd5df}")
     doc.setHtml(doc_html)
@@ -2615,7 +2630,7 @@ class AsBuiltPage(Page):
         info.setWordWrap(True)
         lay.addWidget(info)
         box = QPlainTextEdit()
-        box.setStyleSheet("font-family: Consolas, monospace;")
+        box.setStyleSheet("font-family: Consolas, 'DejaVu Sans Mono', monospace;")
         lay.addWidget(box, 1)
         cks = QCheckBox("Each line ends with a checksum byte (remove it)")
         cks.setChecked(True)
@@ -5151,8 +5166,18 @@ def livedata_val(get, pid: int, fn) -> Optional[float]:
 # ---------------------------------------------------------------- Garage
 class GaragePage(Page):
     def __init__(self, s):
-        super().__init__(s, "Garage", "Every car you've connected to - with its own history, backups, factory file and "
-                                      "trips. Give each one a name you'll recognise.")
+        super().__init__(s, "Garage", "Your cars, each with its own history, backups, factory file and trips. Connect "
+                                      "to a car and add it here, with a name you'll recognise.")
+        self.add_card, al = card()
+        self.add_text = QLabel("")
+        self.add_text.setWordWrap(True)
+        arow = QHBoxLayout()
+        arow.addWidget(self.add_text, 1)
+        self.add_btn = button("Add this car to my garage", "primary")
+        self.add_btn.clicked.connect(self.add_car)
+        arow.addWidget(self.add_btn)
+        al.addLayout(arow)
+        self.root.addWidget(self.add_card)
         row = QHBoxLayout()
         self.rename_btn = button("Rename")
         self.rename_btn.clicked.connect(self.rename)
@@ -5164,6 +5189,7 @@ class GaragePage(Page):
         fac.clicked.connect(self.import_factory)
         forget = button("Remove from garage")
         forget.clicked.connect(self.forget)
+        self.actions = [self.rename_btn, hist, bk, fac, forget]
         for b in (self.rename_btn, hist, bk, fac):
             row.addWidget(b)
         row.addStretch()
@@ -5172,30 +5198,66 @@ class GaragePage(Page):
         self.tbl = table(["Name", "Car", "VIN", "Last connected", "Factory file", "Backups", "Trips"])
         self.tbl.itemDoubleClicked.connect(lambda _: self.open_history())
         self.root.addWidget(self.tbl, 1)
+        self.empty = QLabel("Your garage is empty. Connect to your car, then press <b>Add this car to my garage</b>.")
+        self.empty.setObjectName("subtle")
+        self.empty.setAlignment(Qt.AlignCenter)
+        self.root.addWidget(self.empty)
         self.cars: List[garage.Car] = []
         s.connected_changed.connect(lambda _: self.render())
         s.factory_changed.connect(self.render)
         s.history_changed.connect(self.render)
+        self.render()
 
     def showEvent(self, e):
         self.render()
         super().showEvent(e)
 
+    def saved(self) -> dict:
+        return library.settings().get("garage") or {}
+
     def render(self):
-        cfg = library.settings()
+        saved = self.saved()
         rows = self.s.history.vins() if self.s.history else []
-        self.cars = garage.cars(rows, cfg.get("garage", {}), set(cfg.get("garage_hidden", [])))
+        self.cars = garage.cars(rows, saved)
+        # offer to add the connected car (not simulators, and not one that's already here)
+        here = self.s.connected and self.s.vin and not self.s.simulated
+        can_add = bool(here and self.s.vin not in saved and factory.VIN_RE.fullmatch(self.s.vin))
+        self.add_card.setVisible(can_add)
+        if can_add:
+            car = self.s.vin_info.summary if self.s.vin_info else "This car"
+            self.add_text.setText(f"<b>Connected: {html.escape(car)}</b><br>VIN {html.escape(self.s.vin)} - add it to "
+                                  "your garage to keep its history, backups and trips together.")
+        self.tbl.setVisible(bool(self.cars))
+        self.empty.setVisible(not self.cars)
+        for b in self.actions:
+            b.setEnabled(bool(self.cars))
         self.tbl.setRowCount(0)
         for c in self.cars:
             r = self.tbl.rowCount()
             self.tbl.insertRow(r)
-            here = self.s.connected and c.vin == self.s.vin
-            vals = [(c.name or "-") + ("  (connected)" if here else ""), c.summary, c.vin,
+            now = self.s.connected and c.vin == self.s.vin
+            vals = [(c.name or "-") + ("  (connected)" if now else ""), c.summary, c.vin,
                     time.strftime("%d %b %Y", time.localtime(c.last_seen)) if c.last_seen else "-",
                     "Yes" if c.has_factory else "No", str(c.backups), str(c.trips)]
             for col, v in enumerate(vals):
-                self.tbl.setItem(r, col, item(v, OK if here and col == 0 else
+                self.tbl.setItem(r, col, item(v, OK if now and col == 0 else
                                               WARN if col == 4 and not c.has_factory else None))
+
+    def add_car(self):
+        if not (self.s.connected and self.s.vin):
+            return
+        from PySide6.QtWidgets import QInputDialog
+        suggestion = self.s.vin_info.summary if self.s.vin_info else ""
+        name, ok = QInputDialog.getText(self, "Add to my garage", "Give this car a name (e.g. \"My Fiesta\"):",
+                                        text=suggestion)
+        if not ok:
+            return
+        cfg = library.settings()
+        cfg["garage"] = garage.add(cfg.get("garage") or {}, self.s.vin, name or suggestion)
+        library.save_settings(cfg)
+        self.s.log(f"Added {name or self.s.vin} to the garage")
+        self.s.history_changed.emit()
+        self.render()
 
     def current(self) -> Optional[garage.Car]:
         r = self.tbl.currentRow()
@@ -5209,7 +5271,7 @@ class GaragePage(Page):
         if not c:
             return
         from PySide6.QtWidgets import QInputDialog
-        name, ok = QInputDialog.getText(self, "Name this car", f"Name for {c.vin}:", text=c.name)
+        name, ok = QInputDialog.getText(self, "Rename", f"Name for {c.vin}:", text=c.name)
         if not ok:
             return
         cfg = library.settings()
@@ -5258,17 +5320,19 @@ class GaragePage(Page):
         c = self.current()
         if not c:
             return
-        r = QMessageBox.question(self, "Remove from garage",
-                                 f"Remove <b>{html.escape(c.name or c.summary or c.vin)}</b> from the garage?<br><br>"
-                                 "Its history is deleted. Backups and the factory file stay in your Hatchling folder.")
-        if r != QMessageBox.Yes:
+        box = QMessageBox(QMessageBox.Question, "Remove from garage",
+                          f"Remove <b>{html.escape(c.name or c.summary or c.vin)}</b> from your garage?",
+                          parent=self)
+        keep = box.addButton("Remove, keep its history", QMessageBox.AcceptRole)
+        wipe = box.addButton("Remove and delete its history", QMessageBox.DestructiveRole)
+        box.addButton("Cancel", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() not in (keep, wipe):
             return
-        if self.s.history:
+        if box.clickedButton() is wipe and self.s.history:
             self.s.history.delete_vin(c.vin)
         cfg = library.settings()
-        hidden = set(cfg.get("garage_hidden", []))
-        hidden.add(c.vin)
-        cfg["garage_hidden"] = sorted(hidden)
+        (cfg.get("garage") or {}).pop(c.vin, None)
         library.save_settings(cfg)
         self.s.history_changed.emit()
         self.render()
@@ -5301,7 +5365,7 @@ class ProblemReportDialog(QDialog):
         lay.addWidget(prev_lbl)
         self.preview = QPlainTextEdit()
         self.preview.setReadOnly(True)
-        self.preview.setStyleSheet("font-family: Consolas, monospace; font-size: 9pt;")
+        self.preview.setStyleSheet("font-family: Consolas, 'DejaVu Sans Mono', monospace; font-size: 9pt;")
         lay.addWidget(self.preview, 1)
         row = QHBoxLayout()
         row.addStretch()
@@ -5383,6 +5447,15 @@ class SettingsPage(Page):
         self.night.setChecked(bool(self.cfg.get("dark_mode")))
         self.night.toggled.connect(lambda v: self.s.window.set_theme(v))
         add("Colours", self.night, "Darker colours for the garage at night. Switches straight away.")
+        self.compact = QCheckBox("Compact layout")
+        self.compact.setChecked(bool(self.cfg.get("compact", theme.COMPACT)))
+        self.compact.toggled.connect(lambda v: (self.set("compact", v), QMessageBox.information(
+            self, "Hatchling", "Close and reopen Hatchling to use the new layout.")))
+        add("Small screens", self.compact, "Tighter spacing for small displays such as a Raspberry Pi screen.")
+        self.fullscr = QCheckBox("Start full screen")
+        self.fullscr.setChecked(bool(self.cfg.get("full_screen", theme.COMPACT)))
+        self.fullscr.toggled.connect(lambda v: self.set("full_screen", v))
+        add("Full screen", self.fullscr, "Press F11 to switch full screen on or off at any time.")
         head("Updates")
         self.auto_upd = QCheckBox("Install a downloaded update when I close Hatchling")
         self.auto_upd.setChecked(self.cfg.get("install_updates_on_close", True))
@@ -5693,8 +5766,8 @@ class UpdateDialog(QDialog):
         w = self.win
         if w.update_path:
             self.bar.setRange(0, 0)   # busy
-            self.status.setText("Installing… Windows may ask for permission. Hatchling will close and reopen on "
-                                "the new version in a moment.")
+            self.status.setText("Installing… " + ("Windows may ask for permission. " if sys.platform == "win32" else "")
+                                + "Hatchling will close and reopen on the new version in a moment.")
             self.later.setEnabled(False)
             QTimer.singleShot(400, self.install)
         elif w.update_error:
@@ -5735,7 +5808,11 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"Hatchling {VERSION}")
-        self.resize(1180, 760)
+        scr = QApplication.primaryScreen().availableGeometry() if QApplication.primaryScreen() else None
+        if scr is not None:
+            self.resize(min(1180, scr.width()), min(760, scr.height()))
+        else:
+            self.resize(1180, 760)
         self.s = Session()
         self.s.window = self
         central = QWidget()
@@ -5746,7 +5823,7 @@ class MainWindow(QMainWindow):
         body.setSpacing(0)
         self.nav = QListWidget()
         self.nav.setObjectName("nav")
-        self.nav.setFixedWidth(210)
+        self.nav.setFixedWidth(160 if theme.COMPACT else 210)
         self.stack = QStackedWidget()
         # (key, label in the sidebar, page class) - keys are what the code refers to
         groups = [
@@ -5786,6 +5863,8 @@ class MainWindow(QMainWindow):
                 self.pages[key] = cls(self.s)
                 self.stack.addWidget(self.pages[key])
         self.nav.currentItemChanged.connect(self.on_nav)
+        QShortcut(QKeySequence("F11"), self, activated=lambda: self.showNormal() if self.isFullScreen()
+                  else self.showFullScreen())
         self.s.open_config = self.open_config
         self.s.focus_mode = self.focus_mode
         self.s.go = self.go
@@ -5939,7 +6018,7 @@ class MainWindow(QMainWindow):
                 return
             self.s.log(f"Update available: Hatchling {rel.version}")
             self.update_rel = rel
-            if rel.installer and rel.sha256 and sys.platform == "win32":
+            if rel.installer and rel.sha256 and updates.can_install():
                 self.update_btn = button(f"Update to v{rel.version}", "primary")
                 self.update_btn.setToolTip("What's new:\n" + updates.whats_new(rel.notes, rel.version)
                                            .replace("**", "")[:700])
@@ -6045,6 +6124,12 @@ def main():
     sys.excepthook = excepthook
     app = QApplication(sys.argv)
     app.setApplicationName("Hatchling")
+    app.setDesktopFileName("hatchling")   # Linux: matches hatchling.desktop for the taskbar icon
+    cfg = library.settings()
+    scr = app.primaryScreen().availableGeometry() if app.primaryScreen() else None
+    small = bool(scr and (scr.width() < 1100 or scr.height() < 700))
+    theme.COMPACT = cfg.get("compact", small)
+    theme.apply(bool(cfg.get("dark_mode")))
     app.setStyleSheet(theme.STYLE)
     icon = QIcon(paths.asset("hatchling.ico"))
     app.setWindowIcon(icon)
@@ -6059,7 +6144,10 @@ def main():
 
     def done():
         w = holder.get("w") or MainWindow()
-        w.show()
+        if cfg.get("full_screen", small):
+            w.showFullScreen()     # small screens (Raspberry Pi displays) get the whole screen
+        else:
+            w.show()
         w.raise_()
         w.activateWindow()
         splash.deleteLater()

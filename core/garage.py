@@ -32,25 +32,24 @@ def _count_backups(v: str) -> int:
     return len([f for f in os.listdir(d) if f.endswith(".json")]) if os.path.isdir(d) else 0
 
 
-def cars(history_rows: List[tuple], names: Dict[str, dict], hidden: Optional[set] = None) -> List[Car]:
-    """history_rows: (vin, last seen, events) from History.vins(). Cars with only a factory file or
-    backups are included too."""
-    seen: Dict[str, Car] = {}
-    known = [(v, ts, n) for v, ts, n in history_rows]
-    for v, _ in factory.stored():
-        known.append((v, 0.0, 0))
-    if os.path.isdir(BACKUP_DIR):
-        for d in os.listdir(BACKUP_DIR):
-            known.append((d, 0.0, 0))
+def cars(history_rows: List[tuple], saved: Dict[str, dict]) -> List[Car]:
+    """The cars the owner added to the garage (saved = settings["garage"]: {vin: {"name": ..}}), with what
+    Hatchling has for each. history_rows: (vin, last seen, events) from History.vins()."""
+    seen = {v: (ts or 0.0, n or 0) for v, ts, n in history_rows}
     stored = {v for v, _ in factory.stored()}
-    for v, ts, n in known:
-        if not v or not VIN_OK.fullmatch(v) or v in (hidden or set()):
+    out = []
+    for v, d in (saved or {}).items():
+        if not v or not VIN_OK.fullmatch(v) or not isinstance(d, dict):
             continue
-        if v in seen:
-            c = seen[v]
-            c.last_seen, c.events = max(c.last_seen, ts or 0), c.events + (n or 0)
-            continue
+        ts, n = seen.get(v, (0.0, 0))
         info = vinmod.decode(v)
-        seen[v] = Car(v, (names.get(v) or {}).get("name", ""), info.summary if info else "", ts or 0.0, n or 0,
-                      v in stored, _count_backups(v), len(trips.load_trips(v)))
-    return sorted(seen.values(), key=lambda c: -c.last_seen)
+        out.append(Car(v, d.get("name", ""), info.summary if info else "", max(ts, float(d.get("added", 0))), n,
+                       v in stored, _count_backups(v), len(trips.load_trips(v))))
+    return sorted(out, key=lambda c: -c.last_seen)
+
+
+def add(saved: Dict[str, dict], vin: str, name: str = "") -> Dict[str, dict]:
+    import time
+    saved = dict(saved or {})
+    saved[vin] = {**saved.get(vin, {}), "name": name.strip()[:40], "added": time.time()}
+    return saved

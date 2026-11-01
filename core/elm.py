@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import socket
+import sys
 import threading
 import time
 from typing import Callable, List, Optional
@@ -58,6 +59,12 @@ def describe_ports() -> List[tuple]:
     for p in list_ports.comports():
         chip = USB_CHIPS.get((p.vid, p.pid)) if p.vid is not None else None
         desc = p.description if p.description and p.description != "n/a" else ""
+        dev = p.device or ""
+        if dev.startswith("/dev/ttyS") and p.vid is None:
+            continue           # Linux lists dozens of built-in serial ports that are never an adapter
+        if dev.startswith("/dev/rfcomm"):
+            out.append((dev, f"{dev} - Bluetooth adapter"))
+            continue
         if "bluetooth" in desc.lower():
             # Windows makes two COM ports per paired Bluetooth adapter - the 'outgoing' one is the one to use
             name = "Bluetooth adapter (if it doesn't answer, try the other Bluetooth COM port)"
@@ -91,7 +98,13 @@ class SerialTransport:
     def __init__(self, port: str, baud: int = 38400):
         if serial is None:
             raise ElmError("pyserial is not installed (pip install pyserial)")
-        self.ser = serial.Serial(port, baud, timeout=0.05)
+        try:
+            self.ser = serial.Serial(port, baud, timeout=0.05)
+        except serial.SerialException as e:
+            if "ermission" in str(e) and not sys.platform.startswith("win"):
+                raise ElmError(f"No permission to use {port}. Run this once in a terminal, then log out and back in: "
+                               "sudo usermod -aG dialout $USER")
+            raise ElmError(f"Couldn't open {port}: {e}")
 
     def send(self, cmd: str, timeout: float = 2.0) -> List[str]:
         self.ser.reset_input_buffer()

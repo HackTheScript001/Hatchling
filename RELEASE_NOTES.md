@@ -1,3 +1,8 @@
+What's new in 1.6.0
+- Linux and Raspberry Pi: Hatchling now runs on Linux (Ubuntu, Debian, Mint and others) and on Raspberry Pi OS 64-bit - so a Pi with a small screen makes a portable diagnostic tool. Install with one line (see How to install below). It updates itself like the Windows version.
+- Small screens: on a small display (like the Pi's 7 inch screen) Hatchling uses a compact layout and opens full screen. F11 switches full screen on and off; both can be changed in Settings.
+- Garage: now starts empty. When you connect to your car, Hatchling asks whether to add it, or press Add this car to my garage. Removing a car can keep or delete its history.
+
 What's new in 1.5.2
 - Updates download more reliably: if the connection drops part way, Hatchling carries on from where it stopped and retries by itself, instead of failing the checksum check.
 
@@ -57,7 +62,12 @@ Adapters and fixes
 - The Simulator has its own factory file, so you can try **Changes since factory** without a car.
 
 How to install
-Hatchling updates itself: click Update in the bottom bar. For a fresh install, download Hatchling-Setup-1.5.2.exe below and run it. Windows may show "Windows protected your PC" because the installer isn't code-signed yet - click More info, then Run anyway.
+Hatchling updates itself: click Update in the bottom bar.
+Windows: download Hatchling-Setup-1.6.0.exe below and run it.
+Linux / Raspberry Pi OS (64-bit): open a terminal and run
+curl -fsSL https://raw.githubusercontent.com/HackTheScript001/Hatchling/main/install-linux.sh | bash
+
+Windows may show "Windows protected your PC" because the installer isn't code-signed yet - click More info, then Run anyway.
 
 **Use at your own risk.** Hatchling writes to your car's modules. Keep a battery charger connected when making changes, and import your factory file before changing anything.
 
