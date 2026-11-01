@@ -1,11 +1,14 @@
 Beta testing release - thanks for trying Hatchling.
 
-**Download `Hatchling-Setup-1.3.0.exe` below** and run it (it updates your current version in place). Windows may show "Windows protected your PC" because the installer isn't code-signed yet - click **More info**, then **Run anyway**. From 1.3.0 on, Hatchling updates itself.
+**Download `Hatchling-Setup-1.3.1.exe` below** and run it (it updates your current version in place). Windows may show "Windows protected your PC" because the installer isn't code-signed yet - click **More info**, then **Run anyway**. From 1.3.0 on, Hatchling updates itself.
 
-What's new
+What's new in 1.3.1
+- **Updating Hatchling window** - click **Update to …** in the bottom bar and Hatchling shows the download progress, then the installer's progress, then reopens on the new version. Nothing opens GitHub. (The download already starts in the background as soon as an update is found, so it's usually ready straight away.)
+
+New in 1.3.0
 
 Updates
-- **Updates install themselves** - Hatchling downloads a new version in the background, checks it against the checksum published with the release, and shows **Restart to update**. One click (and Windows' permission prompt) and it reopens on the new version. If you don't click it, the update installs when you close Hatchling.
+- **Updates install themselves** - Hatchling downloads a new version in the background and checks it against the checksum published with the release. If you don't update straight away, it installs when you close Hatchling.
 
 Safety before changing anything
 - **Battery check** - before any change Hatchling reads the battery. Below 12.2 V it stops and asks you to connect a charger; between 12.2 V and 12.4 V it warns you first.
