@@ -1,5 +1,7 @@
 # Hatchling
 
+**A SecondWave IT Systems product.**
+
 You heard of Forscan now welcome to Hatchling
 
 **[Download the latest version](https://github.com/HackTheScript001/Hatchling/releases/latest)** - on Windows run `Hatchling-Setup-<version>.exe`.
@@ -326,3 +328,13 @@ installer/        Inno Setup script
 tools/build-windows.ps1  one-step Windows build (used by Build-Hatchling.cmd)
 ui/app.py         PySide6 desktop app
 ```
+
+## Licence
+
+Hatchling is free to use but is not open source. See [LICENSE](LICENSE). Hatchling isn't made by or
+connected with Ford, Mazda or any other vehicle manufacturer.
+
+---
+
+Hatchling is owned and developed by **SecondWave IT Systems** (Bedford & Central Bedfordshire).
+Contact: liam@secondwaveitsystems.cloud
