@@ -22,6 +22,12 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
+AppPublisherURL=https://secondwaveitsystems.cloud
+AppSupportURL=https://github.com/HackTheScript001/Hatchling/issues
+AppUpdatesURL=https://github.com/HackTheScript001/Hatchling/releases
+AppCopyright=(c) SecondWave IT Systems. All rights reserved.
+AppContact=liam@secondwaveitsystems.cloud
+LicenseFile=..\LICENSE
 ; Installs to C:\Program Files (x86)\Hatchling ({commonpf32} is the 32-bit Program Files folder on 64-bit Windows)
 DefaultDirName={commonpf32}\{#MyAppName}
 DefaultGroupName={#MyAppName}
@@ -41,9 +47,17 @@ PrivilegesRequired=admin
 CloseApplications=yes
 VersionInfoVersion={#MyAppVersion}
 VersionInfoProductName={#MyAppName}
+VersionInfoCompany={#MyAppPublisher}
+VersionInfoCopyright=(c) SecondWave IT Systems
+VersionInfoDescription={#MyAppName} - a SecondWave IT Systems product
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[Messages]
+SetupWindowTitle=%1 Setup - SecondWave IT Systems
+WelcomeLabel2=This will install [name/ver] on your computer.%n%nHatchling is a SecondWave IT Systems product - diagnostics and feature setup for Ford-family vehicles.%n%nIt is recommended that you close all other applications before continuing.
+FinishedLabel=Setup has finished installing [name] on your computer.%n%nHatchling is a SecondWave IT Systems product. Thanks for using it.
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Shortcuts:"

@@ -1,3 +1,7 @@
+What's new in 1.7.1
+- Hatchling is a SecondWave IT Systems product: the installer, the status bar and Settings > About now say so.
+- New licence: Hatchling stays free to use, but it's no longer open source. The installer shows the licence before installing.
+
 What's new in 1.7.0
 - Simpler Features page: each feature has one switch. Flip it and Hatchling does the rest - checks the parts are fitted, checks the battery, backs up, writes, and checks it took. The technical details are still there behind "Show the details".
 - Will this work on my car? Before anything is written, Hatchling compares the feature with your car: the same module part numbers, the same settings layout, and that your car's current setting is one the feature knows. You get a clear answer: Proven on your modules, Very likely, Untested on your modules (only written if you tick that you accept the risk), or Won't work on your car (never written).
